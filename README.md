@@ -1,5 +1,10 @@
 # Diagrams.so SDKs
 
+[![CI](https://github.com/RedHold/diagrams-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/RedHold/diagrams-sdk/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/diagrams-so?label=pypi%20diagrams-so)](https://pypi.org/project/diagrams-so/)
+[![npm](https://img.shields.io/npm/v/%40diagrams-so%2Fsdk?label=npm%20%40diagrams-so%2Fsdk)](https://www.npmjs.com/package/@diagrams-so/sdk)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
+
 Official **Python** and **TypeScript** SDKs for the [Diagrams.so](https://diagrams.so) public API (`/api/v2`) — generate, edit, and manage cloud-architecture diagrams (draw.io / SVG) with AI.
 
 | SDK | Package | Source |
@@ -42,6 +47,8 @@ cd typescript && npm install && npm run build && npm test
 ```
 
 Tests include a **drift-guard** that asserts each SDK covers exactly the operations in [`spec/openapi-v2.json`](./spec/openapi-v2.json). When the API changes, run [`scripts/sync-spec.sh`](./scripts/sync-spec.sh) to re-vendor the spec — the tests then flag anything the SDKs are missing.
+
+See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for the coverage contract, conventions, and the release process.
 
 ## Releasing
 CI publishes on a version tag **if** the registry token secret is set:
