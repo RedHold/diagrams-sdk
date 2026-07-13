@@ -1,0 +1,51 @@
+{
+  "name": "@diagrams-so/sdk",
+  "version": "1.0.0",
+  "description": "TypeScript SDK for the Diagrams.so public API \u2014 generate, edit, and manage cloud architecture diagrams with AI.",
+  "type": "module",
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "node --test test/",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "diagram",
+    "architecture",
+    "aws",
+    "azure",
+    "gcp",
+    "drawio",
+    "ai",
+    "diagrams.so"
+  ],
+  "license": "MIT",
+  "author": "RedHold / Diagrams.so",
+  "homepage": "https://diagrams.so",
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RedHold/diagrams-sdk.git",
+    "directory": "typescript"
+  },
+  "bugs": {
+    "url": "https://github.com/RedHold/diagrams-sdk/issues"
+  }
+}

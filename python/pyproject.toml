@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "diagrams-so"
+version = "1.0.0"
+description = "Python SDK for the Diagrams.so public API — generate, edit, and manage cloud architecture diagrams with AI."
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [{ name = "RedHold / Diagrams.so" }]
+keywords = ["diagram", "architecture", "aws", "azure", "gcp", "drawio", "ai"]
+dependencies = []  # stdlib-only; uses `requests` if present, else urllib
+
+[project.urls]
+Homepage = "https://diagrams.so"
+Documentation = "https://developers.diagrams.so"
+Repository = "https://github.com/RedHold/diagrams-sdk"
+Issues = "https://github.com/RedHold/diagrams-sdk/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["diagrams_so*"]
+
+[tool.setuptools.package-data]
+diagrams_so = ["py.typed"]

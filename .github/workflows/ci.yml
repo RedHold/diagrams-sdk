@@ -1,0 +1,93 @@
+name: CI (build · test · publish)
+
+# Build + test both SDKs on every change; publish on a version tag IF the
+# corresponding registry token secret is present.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["sdk-py-v*", "sdk-ts-v*"]
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.8", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install + test
+        working-directory: python
+        run: |
+          python -m pip install --upgrade pip pytest build
+          pip install -e .
+          pytest -q          # includes the drift-guard vs ../spec/openapi-v2.json
+      - name: Build sdist + wheel
+        working-directory: python
+        run: python -m build
+
+  typescript:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: ["18", "20"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+      - name: Install, build, test
+        working-directory: typescript
+        run: |
+          npm install --no-audit --no-fund
+          npm run build
+          npm test           # node --test, includes the drift-guard
+
+  publish-python:
+    needs: python
+    if: startsWith(github.ref, 'refs/tags/sdk-py-v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Build
+        working-directory: python
+        run: |
+          python -m pip install --upgrade pip build twine
+          python -m build
+      - name: Publish to PyPI (only if PYPI_TOKEN is set)
+        working-directory: python
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
+        run: |
+          if [ -z "$TWINE_PASSWORD" ]; then echo "PYPI_TOKEN not set — skipping publish"; exit 0; fi
+          twine upload dist/*
+
+  publish-npm:
+    needs: typescript
+    if: startsWith(github.ref, 'refs/tags/sdk-ts-v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+      - name: Build
+        working-directory: typescript
+        run: |
+          npm install --no-audit --no-fund
+          npm run build
+      - name: Publish to npm (only if NPM_TOKEN is set)
+        working-directory: typescript
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then echo "NPM_TOKEN not set — skipping publish"; exit 0; fi
+          npm publish --access public
