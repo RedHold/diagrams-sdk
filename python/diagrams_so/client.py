@@ -34,6 +34,15 @@ class DiagramsClient:
         self.timeout = timeout
         self.max_retries = max_retries
         self.backoff = backoff
+        # Identify this client so the API attributes charges to source="sdk-python"
+        # in the credit-consumption history (X-Diagrams-Client wins; User-Agent is a
+        # fallback). Import here to avoid a circular import at module load.
+        from . import __version__ as _v
+        self._client_id = f"sdk-python/{_v}"
+        self._user_agent = f"diagrams-so-python/{_v}"
+        # Running tally of credits this client charged in-process — answers
+        # "how much did each task cost?" instantly, no server round-trip.
+        self.session_charges: List[Dict[str, Any]] = []
 
     # -- transport ---------------------------------------------------------
     def _request(self, method: str, path: str, *, params: Optional[dict] = None,
@@ -43,8 +52,9 @@ class DiagramsClient:
         if params:
             params = {k: v for k, v in params.items() if v is not None}
             if params:
-                url += "?" + urlencode(params)
-        headers = {"Authorization": f"Bearer {self.api_key}", "Accept": "application/json"}
+                url += "?" + urlencode(params, doseq=True)
+        headers = {"Authorization": f"Bearer {self.api_key}", "Accept": "application/json",
+                   "User-Agent": self._user_agent, "X-Diagrams-Client": self._client_id}
         if extra_headers:
             headers.update({k: v for k, v in extra_headers.items() if v is not None})
         data = None
@@ -105,14 +115,31 @@ class DiagramsClient:
                 hdrs = {k.lower(): v for k, v in (e.headers.items() if e.headers else [])}
                 return e.code, hdrs, e.read().decode()
 
+    # -- session charge tally ---------------------------------------------
+    def _track(self, action: str, result: Dict[str, Any]) -> Dict[str, Any]:
+        """Record what a billable task charged, so ``session_charges`` can answer
+        'how much did each task cost?' without a server round-trip."""
+        try:
+            usage = (result or {}).get("usage") or {}
+            if usage:
+                self.session_charges.append({
+                    "action": action,
+                    "diagram_id": (result or {}).get("id"),
+                    "credits_charged": usage.get("credits_charged"),
+                    "credits_remaining": usage.get("credits_remaining"),
+                })
+        except Exception:
+            pass
+        return result
+
     # -- diagrams ----------------------------------------------------------
     def generate(self, prompt: str, *, cloud_provider: str = "general",
                  diagram_type: str = "architecture", opinionated: bool = False,
                  idempotency_key: Optional[str] = None) -> Dict[str, Any]:
-        return self._request("POST", "/diagrams", body={
+        return self._track("generate", self._request("POST", "/diagrams", body={
             "prompt": prompt, "cloud_provider": cloud_provider,
             "diagram_type": diagram_type, "opinionated": opinionated,
-        }, extra_headers={"Idempotency-Key": idempotency_key})
+        }, extra_headers={"Idempotency-Key": idempotency_key}))
 
     def generate_stream(self, prompt: str, *, cloud_provider: str = "general",
                         diagram_type: str = "architecture", opinionated: bool = False,
@@ -134,7 +161,8 @@ class DiagramsClient:
         body = {"prompt": prompt, "cloud_provider": cloud_provider,
                 "diagram_type": diagram_type, "opinionated": opinionated}
         headers = {"Authorization": f"Bearer {self.api_key}", "Accept": "text/event-stream",
-                   "Content-Type": "application/json"}
+                   "Content-Type": "application/json",
+                   "User-Agent": self._user_agent, "X-Diagrams-Client": self._client_id}
         if idempotency_key:
             headers["Idempotency-Key"] = idempotency_key
         data = _json.dumps(body).encode()
@@ -202,14 +230,16 @@ class DiagramsClient:
 
     def edit(self, diagram_id: str, edit_prompt: str, *,
              idempotency_key: Optional[str] = None) -> Dict[str, Any]:
-        return self._request("POST", f"/diagrams/{diagram_id}/edit", body={"edit_prompt": edit_prompt},
-                             extra_headers={"Idempotency-Key": idempotency_key})
+        return self._track("edit", self._request(
+            "POST", f"/diagrams/{diagram_id}/edit", body={"edit_prompt": edit_prompt},
+            extra_headers={"Idempotency-Key": idempotency_key}))
 
     def fix(self, diagram_id: str, message: str, *, component: Optional[str] = None,
             warning_type: Optional[str] = None, idempotency_key: Optional[str] = None) -> Dict[str, Any]:
-        return self._request("POST", f"/diagrams/{diagram_id}/fix",
-                             body={"message": message, "component": component, "warning_type": warning_type},
-                             extra_headers={"Idempotency-Key": idempotency_key})
+        return self._track("fix", self._request(
+            "POST", f"/diagrams/{diagram_id}/fix",
+            body={"message": message, "component": component, "warning_type": warning_type},
+            extra_headers={"Idempotency-Key": idempotency_key}))
 
     def warnings(self, diagram_id: str) -> List[Dict[str, Any]]:
         return self._request("GET", f"/diagrams/{diagram_id}/warnings")
@@ -292,6 +322,43 @@ class DiagramsClient:
     # -- account -----------------------------------------------------------
     def usage(self) -> Dict[str, Any]:
         return self._request("GET", "/usage")
+
+    def usage_history(self, *, limit: Optional[int] = None, cursor: Optional[str] = None,
+                      action: Optional[List[str]] = None, source: Optional[List[str]] = None,
+                      diagram_id: Optional[str] = None, livemode: Optional[bool] = None,
+                      since: Optional[str] = None, until: Optional[str] = None,
+                      include_grants: bool = False) -> Dict[str, Any]:
+        """One page of the per-task credit-consumption history — how much each task
+        (generate/edit/fix/relayout) charged, newest first. Returns
+        ``{items, next_cursor, has_more, summary}``. ``action``/``source`` are lists;
+        ``since``/``until`` are ISO-8601 bounds (map to the API's ``from``/``to``)."""
+        params: Dict[str, Any] = {
+            "limit": limit, "cursor": cursor, "diagram_id": diagram_id,
+            "include_grants": "true" if include_grants else None,
+            "from": since, "to": until,
+        }
+        if livemode is not None:
+            params["livemode"] = "true" if livemode else "false"
+        if action:
+            params["action"] = action  # urlencode with doseq handles repeats
+        if source:
+            params["source"] = source
+        return self._request("GET", "/usage/history", params=params)
+
+    def iter_usage_history(self, **kwargs):
+        """Yield every history item across pages, auto-following ``next_cursor``.
+        Accepts the same filters as :meth:`usage_history` (except ``cursor``)."""
+        kwargs.pop("cursor", None)
+        cursor = None
+        while True:
+            page = self.usage_history(cursor=cursor, **kwargs)
+            for item in page.get("items", []):
+                yield item
+            if not page.get("has_more"):
+                return
+            cursor = page.get("next_cursor")
+            if not cursor:
+                return
 
     def me(self) -> Dict[str, Any]:
         return self._request("GET", "/me")

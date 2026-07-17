@@ -14,6 +14,8 @@
  */
 
 export const DEFAULT_BASE = "https://api.diagrams.so/api/v2";
+/** Bumped with the package; sent so the API attributes charges to source="sdk-ts". */
+export const SDK_VERSION = "1.0.0";
 
 export class DiagramsAPIError extends Error {
   constructor(
@@ -39,6 +41,23 @@ export interface Diagram {
   warnings: Warning[]; score?: Score | null; usage?: Usage | null;
 }
 export interface Page<T> { items: T[]; next_cursor?: string | null; has_more: boolean; }
+export interface UsageHistoryItem {
+  id: string; created_at: string;
+  action_type: string;      // generate | edit | fix | relayout
+  credits_charged: number;  // 0 == free
+  diagram_id?: string | null; tier?: string | null;
+  tokens_input?: number | null; tokens_output?: number | null; tokens_total?: number | null;
+  source?: string | null;   // api | sdk-python | sdk-ts | mcp | web
+  livemode?: boolean | null; request_id?: string | null;
+}
+export interface UsageHistorySummary { total_credits_charged: number; task_count: number; }
+export interface UsageHistoryList { items: UsageHistoryItem[]; next_cursor?: string | null; has_more: boolean; summary: UsageHistorySummary; }
+/** One entry in the in-process tally of what each billable task charged. */
+export interface SessionCharge { action: string; diagramId?: string; creditsCharged?: number; creditsRemaining?: number; }
+export interface UsageHistoryFilters {
+  limit?: number; cursor?: string; action?: string[]; source?: string[];
+  diagramId?: string; livemode?: boolean; since?: string; until?: string; includeGrants?: boolean;
+}
 export interface RelayoutJob {
   job_id?: string; status: string; // "pending" | "confirmation_required" | ...
   chargeable?: boolean | null; message?: string; reason?: string;
@@ -57,6 +76,11 @@ export class DiagramsClient {
   private timeoutMs: number;
   private maxRetries: number;
   private backoffMs: number;
+  private clientId = `sdk-ts/${SDK_VERSION}`;
+  private userAgent = `@diagrams-so/sdk/${SDK_VERSION}`;
+  /** Running tally of what each billable task charged this session — answers
+   * "how much did each task cost?" with no server round-trip. */
+  public sessionCharges: SessionCharge[] = [];
 
   constructor(opts: DiagramsClientOptions) {
     if (!opts?.apiKey) throw new Error("apiKey is required (dgz_live_… or dgz_test_…)");
@@ -67,6 +91,16 @@ export class DiagramsClient {
     this.backoffMs = opts.backoffMs ?? 500;
   }
 
+  /** Record what a billable task charged (from the response `usage` block). */
+  private track(action: string, result: any): any {
+    const u = result?.usage;
+    if (u) this.sessionCharges.push({
+      action, diagramId: result?.id,
+      creditsCharged: u.credits_charged, creditsRemaining: u.credits_remaining,
+    });
+    return result;
+  }
+
   private async request<T = any>(
     method: string, path: string,
     opts: { query?: Record<string, any>; body?: any; raw?: boolean; headers?: Record<string, string> } = {},
@@ -74,13 +108,19 @@ export class DiagramsClient {
     let url = this.baseUrl + path;
     if (opts.query) {
       const qs = new URLSearchParams();
-      for (const [k, v] of Object.entries(opts.query)) if (v !== undefined && v !== null) qs.set(k, String(v));
+      for (const [k, v] of Object.entries(opts.query)) {
+        if (v === undefined || v === null) continue;
+        if (Array.isArray(v)) { for (const item of v) if (item !== undefined && item !== null) qs.append(k, String(item)); }
+        else qs.set(k, String(v));
+      }
       const s = qs.toString();
       if (s) url += "?" + s;
     }
     const headers: Record<string, string> = {
       Authorization: `Bearer ${this.apiKey}`,
       Accept: "application/json",
+      "User-Agent": this.userAgent,
+      "X-Diagrams-Client": this.clientId,
       ...(opts.headers ?? {}),
     };
     if (opts.body !== undefined) headers["Content-Type"] = "application/json";
@@ -131,11 +171,11 @@ export class DiagramsClient {
   private idem(key?: string) { return key ? { "Idempotency-Key": key } : undefined; }
 
   // -- diagrams --
-  generate(prompt: string, opts: { cloudProvider?: string; diagramType?: string; opinionated?: boolean; idempotencyKey?: string } = {}) {
-    return this.request<Diagram>("POST", "/diagrams", {
+  async generate(prompt: string, opts: { cloudProvider?: string; diagramType?: string; opinionated?: boolean; idempotencyKey?: string } = {}) {
+    return this.track("generate", await this.request<Diagram>("POST", "/diagrams", {
       body: { prompt, cloud_provider: opts.cloudProvider ?? "general", diagram_type: opts.diagramType ?? "architecture", opinionated: opts.opinionated ?? false },
       headers: this.idem(opts.idempotencyKey),
-    });
+    })) as Diagram;
   }
   /** Stream a generation as Server-Sent Events. Yields `{event, data}` where
    * `event` is `"progress" | "complete" | "error"`. Progress events carry only
@@ -156,6 +196,8 @@ export class DiagramsClient {
       Authorization: `Bearer ${this.apiKey}`,
       Accept: "text/event-stream",
       "Content-Type": "application/json",
+      "User-Agent": this.userAgent,
+      "X-Diagrams-Client": this.clientId,
       ...(opts.idempotencyKey ? { "Idempotency-Key": opts.idempotencyKey } : {}),
     };
     const body = JSON.stringify({
@@ -194,13 +236,13 @@ export class DiagramsClient {
   update(id: string, patch: { title?: string; isPublic?: boolean; xml?: string }) {
     return this.request("PATCH", `/diagrams/${id}`, { body: { title: patch.title, is_public: patch.isPublic, xml: patch.xml } });
   }
-  edit(id: string, editPrompt: string, opts: { idempotencyKey?: string } = {}) {
-    return this.request<Diagram>("POST", `/diagrams/${id}/edit`, { body: { edit_prompt: editPrompt }, headers: this.idem(opts.idempotencyKey) });
+  async edit(id: string, editPrompt: string, opts: { idempotencyKey?: string } = {}) {
+    return this.track("edit", await this.request<Diagram>("POST", `/diagrams/${id}/edit`, { body: { edit_prompt: editPrompt }, headers: this.idem(opts.idempotencyKey) })) as Diagram;
   }
-  fix(id: string, message: string, opts: { component?: string; warningType?: string; idempotencyKey?: string } = {}) {
-    return this.request<Diagram>("POST", `/diagrams/${id}/fix`, {
+  async fix(id: string, message: string, opts: { component?: string; warningType?: string; idempotencyKey?: string } = {}) {
+    return this.track("fix", await this.request<Diagram>("POST", `/diagrams/${id}/fix`, {
       body: { message, component: opts.component, warning_type: opts.warningType }, headers: this.idem(opts.idempotencyKey),
-    });
+    })) as Diagram;
   }
   warnings(id: string) { return this.request<Warning[]>("GET", `/diagrams/${id}/warnings`); }
 
@@ -253,6 +295,26 @@ export class DiagramsClient {
 
   // -- account --
   usage() { return this.request("GET", "/usage"); }
+  /** One page of the per-task credit-consumption history (how much each task
+   * charged), newest first. Returns `{items, next_cursor, has_more, summary}`. */
+  usageHistory(filters: UsageHistoryFilters = {}) {
+    return this.request<UsageHistoryList>("GET", "/usage/history", { query: {
+      limit: filters.limit, cursor: filters.cursor, action: filters.action, source: filters.source,
+      diagram_id: filters.diagramId, livemode: filters.livemode,
+      from: filters.since, to: filters.until,
+      include_grants: filters.includeGrants ? "true" : undefined,
+    } });
+  }
+  /** Yield every history item across pages, auto-following `next_cursor`. */
+  async *iterUsageHistory(filters: Omit<UsageHistoryFilters, "cursor"> = {}): AsyncGenerator<UsageHistoryItem> {
+    let cursor: string | undefined;
+    for (;;) {
+      const page = await this.usageHistory({ ...filters, cursor });
+      for (const item of page.items) yield item;
+      if (!page.has_more || !page.next_cursor) return;
+      cursor = page.next_cursor;
+    }
+  }
   me() { return this.request("GET", "/me"); }
   meta(kind: "diagram-types" | "providers" | "formats" | "features") { return this.request("GET", `/meta/${kind}`); }
 }
