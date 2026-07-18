@@ -15,7 +15,7 @@ npm install @diagrams-so/sdk
 ```ts
 import { DiagramsClient } from "@diagrams-so/sdk";
 
-const client = new DiagramsClient({ apiKey: "dgz_live_…" }); // or dgz_test_… (sandbox)
+const client = new DiagramsClient({ apiKey: "dgz_live_…" }); // or dgz_test_… (test mode — bills the same credits)
 
 const d = await client.generate("AWS 3-tier web app: ALB, EC2, RDS", { cloudProvider: "aws" });
 console.log(d.id, d.score?.score, d.warnings.length);
@@ -27,7 +27,7 @@ const drawio = await client.export(d.id, "drawio"); // native .drawio XML string
 ```
 
 ## Authentication & billing
-Pass your key (from the **API Keys** page). `dgz_live_` keys bill credits for `generate`/`edit`/`fix`/`relayout`/`fork`; `dgz_test_` keys are a no-bill sandbox. Reads and `enhancePrompt`/`clarifyPrompt` are free. Check balance with `client.usage()`.
+Pass your key (from the **API Keys** page). `dgz_live_` keys bill credits for `generate`/`edit`/`fix`/`relayout`/`fork`; `dgz_test_` keys are test mode — they bill the same credits (drawing your real balance, like a live key), at lower test rate limits. Reads and `enhancePrompt`/`clarifyPrompt` are free. Check balance with `client.usage()`.
 
 ## Errors
 ```ts

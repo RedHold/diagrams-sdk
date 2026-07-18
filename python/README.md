@@ -17,7 +17,7 @@ pip install diagrams-so
 ```python
 from diagrams_so import DiagramsClient
 
-client = DiagramsClient(api_key="dgz_live_…")   # or dgz_test_… (sandbox, never billed)
+client = DiagramsClient(api_key="dgz_live_…")   # or dgz_test_… (test mode — bills the same credits)
 
 d = client.generate("AWS 3-tier web app: ALB, EC2, RDS", cloud_provider="aws")
 print(d["id"], d["score"]["score"], len(d["warnings"]))
@@ -31,7 +31,7 @@ open("diagram.drawio", "w").write(client.export(d["id"], "drawio"))
 ```
 
 ## Authentication & billing
-Pass your key (from the **API Keys** page in your account). `dgz_live_` keys bill credits for `generate`/`edit`/`fix`/`relayout`/`fork`; `dgz_test_` keys are a no-bill sandbox. Reads and `enhance`/`clarify` are free. Check balance with `client.usage()`.
+Pass your key (from the **API Keys** page in your account). `dgz_live_` keys bill credits for `generate`/`edit`/`fix`/`relayout`/`fork`; `dgz_test_` keys are test mode — they bill the same credits (drawing your real balance, like a live key), at lower test rate limits. Reads and `enhance`/`clarify` are free. Check balance with `client.usage()`.
 
 ## Errors
 Every non-2xx raises `DiagramsAPIError`:

@@ -34,7 +34,7 @@ const d = await c.generate("AWS 3-tier web app: ALB, EC2, RDS", { cloudProvider:
 See [`python/README.md`](./python/README.md) and [`typescript/README.md`](./typescript/README.md) for the full API (auth, errors, streaming, idempotency, pagination), and [`examples/`](./examples) for runnable demos.
 
 ## Get a key
-Create an API key from the **API Keys** page in your Diagrams.so account. `dgz_live_` keys bill credits for generate/edit/fix/relayout/fork; `dgz_test_` keys are a no-bill sandbox. Reads and prompt helpers are free.
+Create an API key from the **API Keys** page in your Diagrams.so account. `dgz_live_` keys bill credits for generate/edit/fix/relayout/fork; `dgz_test_` keys are test mode — they bill the same credits (drawing your real balance, like a live key), at lower test rate limits. Reads and prompt helpers are free.
 
 ## Develop
 
