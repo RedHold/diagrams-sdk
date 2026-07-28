@@ -3,7 +3,7 @@
 [![CI](https://github.com/RedHold/diagrams-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/RedHold/diagrams-sdk/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/diagrams-so?label=pypi%20diagrams-so)](https://pypi.org/project/diagrams-so/)
 [![npm](https://img.shields.io/npm/v/%40diagrams-so%2Fsdk?label=npm%20%40diagrams-so%2Fsdk)](https://www.npmjs.com/package/@diagrams-so/sdk)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
 
 Official **Python** and **TypeScript** SDKs for the [Diagrams.so](https://diagrams.so) public API (`/api/v2`) — generate, edit, and manage cloud-architecture diagrams (draw.io / SVG) with AI.
 
@@ -56,4 +56,4 @@ CI publishes on a version tag **if** the registry token secret is set:
 - `sdk-ts-vX.Y.Z` → npm (needs `NPM_TOKEN`)
 
 ## License
-[MIT](./LICENSE) · docs at [developers.diagrams.so](https://developers.diagrams.so)
+[Apache-2.0](./LICENSE) · docs at [developers.diagrams.so](https://developers.diagrams.so)

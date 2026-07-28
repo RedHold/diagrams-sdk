@@ -94,4 +94,4 @@ Only `429`/`503` are retried (rate-limit / backpressure are pre-charge rejection
 `generate` · `generate_stream` · `list` · `get` · `update` · `delete` · `edit` · `fix` · `warnings` · `relayout` · `relayout_status` · `relayout_and_wait` · `export` · `versions` · `get_version` · `revert` · `import_diagram` · `search_gallery` · `fork` · `enhance_prompt` · `clarify_prompt` · `usage` · `me` · `meta` — each maps 1:1 to an endpoint.
 
 ## License
-MIT · docs at [developers.diagrams.so](https://developers.diagrams.so)
+Apache-2.0 · docs at [developers.diagrams.so](https://developers.diagrams.so)

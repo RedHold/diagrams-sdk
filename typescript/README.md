@@ -87,4 +87,4 @@ new DiagramsClient({ apiKey, baseUrl?, timeoutMs?, maxRetries?, backoffMs? });
 `generate` · `generateStream` · `list` · `get` · `update` · `delete` · `edit` · `fix` · `warnings` · `startRelayout` · `relayoutStatus` · `relayoutAndWait` · `export` · `versions` · `getVersion` · `revert` · `import` · `searchGallery` · `fork` · `enhancePrompt` · `clarifyPrompt` · `usage` · `me` · `meta`
 
 ## License
-MIT · docs at [developers.diagrams.so](https://developers.diagrams.so)
+Apache-2.0 · docs at [developers.diagrams.so](https://developers.diagrams.so)
