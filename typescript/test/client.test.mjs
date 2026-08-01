@@ -74,6 +74,7 @@ test("does not retry on 4xx other than 429", async () => {
 // Drift guard: SDK coverage must equal the live OpenAPI spec.
 const SPEC = resolve(__dirname, "../../spec/openapi-v2.json");
 const COVERED = new Set([
+  "GET /api/v2/usage/history",
   "POST /api/v2/diagrams", "GET /api/v2/diagrams", "POST /api/v2/diagrams/import",
   "POST /api/v2/diagrams/stream", "GET /api/v2/diagrams/{diagram_id}",
   "DELETE /api/v2/diagrams/{diagram_id}", "PATCH /api/v2/diagrams/{diagram_id}",

@@ -1,6 +1,6 @@
 {
   "name": "@diagrams-so/sdk",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "TypeScript SDK for the Diagrams.so public API \u2014 generate, edit, and manage cloud architecture diagrams with AI.",
   "type": "module",
   "main": "dist/index.js",

@@ -2,9 +2,10 @@
 
 A thin, typed, **zero-dependency** client for the [Diagrams.so](https://diagrams.so) public API (`/api/v2`). Works in Node ≥ 18, browsers, and edge/workers (uses platform `fetch`).
 
-- Covers **all 26** `/api/v2` operations · one method per endpoint · fully typed responses
+- Covers **all 27** `/api/v2` operations · one method per endpoint · fully typed responses
 - Zero deps · single `DiagramsAPIError` with `.code` / `.status` / `.requestId`
-- Built-in **retry** on `429`/`503` (honors `Retry-After`), **idempotency keys**, an async-generator **stream**, and a re-layout poll helper
+- **Safe billing:** every billable call auto-attaches an `Idempotency-Key` and retries *ambiguous* failures (timeout / 5xx / in-progress) with the **same key**, so a response lost to a gateway timeout is replayed — one charge, never two
+- Built-in `429`/`503` backoff (honors `Retry-After`), async-generator **stream**, re-layout helper, and an in-process credit tally (`sessionCharges`)
 
 ## Install
 ```bash
@@ -42,10 +43,16 @@ try {
 ```
 
 ## Idempotency
+Every billable call (`generate`, `edit`, `fix`, `startRelayout`) **auto-attaches a
+fresh `Idempotency-Key`** and retries ambiguous failures with that same key, so a
+timeout never double-charges. Pass your own key to make the window explicit or to
+dedupe across processes:
 ```ts
-await client.generate("…", { idempotencyKey: "order-42" }); // replays the stored result for 24h
+await client.generate("…", { idempotencyKey: "order-42" }); // server replays the stored result for 24h
 ```
-Supported on `generate`, `generateStream`, `edit`, `fix`.
+Definite rejections (`401`/`402`/`404`/`422`) are never retried; a call whose outcome
+is lost is recorded in `client.sessionCharges` as `status:"unknown"` — reconcile with
+`client.usageHistory()`.
 
 ## Streaming
 ```ts
@@ -59,9 +66,12 @@ for await (const { event, data } of client.generateStream("AWS event-driven pipe
 The diagram XML arrives only in the terminal `complete` event (after the charge).
 
 ## Async re-layout
+Re-layout is token-billed on **every** run (no free allowance) and charged only on
+delivery. The first call returns `confirmation_required`; re-call with `confirm:true`
+to accept the charge:
 ```ts
 let job = await client.relayoutAndWait(d.id);
-if ((job as any).status === "confirmation_required") {
+if ((job as any).status === "confirmation_required") { // re-layout always needs confirmation
   job = await client.relayoutAndWait(d.id, { confirm: true }); // accept the credit charge
 }
 ```
@@ -79,12 +89,18 @@ do {
 
 ## Config, retries & timeouts
 ```ts
-new DiagramsClient({ apiKey, baseUrl?, timeoutMs?, maxRetries?, backoffMs? });
+new DiagramsClient({ apiKey, baseUrl?, timeoutMs?, maxRetries?, backoffMs?,
+                     retryDelaysMs?, retryBudgetMs? });
 ```
-`baseUrl` defaults to `https://api.diagrams.so/api/v2` (point at `http://localhost:8000/api/v2` for local dev). Only `429`/`503` are retried (pre-charge rejections, so no double-billing); `Retry-After` is honored.
+`timeoutMs` defaults to **450 000** (above the server-side timeout ladder, so the
+client never aborts work the server would still deliver). `baseUrl` defaults to
+`https://api.diagrams.so/api/v2` (point at `http://localhost:8000/api/v2` for local
+dev). Non-billable calls retry `429`/`503` (honoring `Retry-After`); billable calls
+additionally retry *ambiguous* failures with the same idempotency key (`retryDelaysMs`
+between attempts, capped at `retryBudgetMs` total).
 
 ## Full method list
-`generate` · `generateStream` · `list` · `get` · `update` · `delete` · `edit` · `fix` · `warnings` · `startRelayout` · `relayoutStatus` · `relayoutAndWait` · `export` · `versions` · `getVersion` · `revert` · `import` · `searchGallery` · `fork` · `enhancePrompt` · `clarifyPrompt` · `usage` · `me` · `meta`
+`generate` · `generateStream` · `list` · `get` · `update` · `delete` · `edit` · `fix` · `warnings` · `startRelayout` · `relayoutStatus` · `relayoutAndWait` · `export` · `versions` · `getVersion` · `revert` · `import` · `searchGallery` · `fork` · `enhancePrompt` · `clarifyPrompt` · `usage` · `usageHistory` · `iterUsageHistory` · `me` · `meta`
 
 ## License
-Apache-2.0 · docs at [developers.diagrams.so](https://developers.diagrams.so)
+Apache-2.0 · docs at [diagrams.so/developers](https://diagrams.so/developers)

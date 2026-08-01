@@ -15,7 +15,7 @@
 
 export const DEFAULT_BASE = "https://api.diagrams.so/api/v2";
 /** Bumped with the package; sent so the API attributes charges to source="sdk-ts". */
-export const SDK_VERSION = "1.0.0";
+export const SDK_VERSION = "1.1.0";
 
 export class DiagramsAPIError extends Error {
   constructor(
@@ -27,6 +27,20 @@ export class DiagramsAPIError extends Error {
     super(`[${code}] (HTTP ${status}) ${message}`);
     this.name = "DiagramsAPIError";
   }
+}
+
+// Errors where a billable call's outcome is UNKNOWN — the work may have completed
+// and been charged server-side even though this process saw a failure. Retrying
+// with the SAME Idempotency-Key replays the stored result instead of re-running
+// (and re-billing). Definite rejections (401/402/404/422 …) are deliberately absent.
+const AMBIGUOUS_STATUSES = new Set([502, 503, 504, 409]);
+const AMBIGUOUS_CODES = new Set(["TIMEOUT", "CONNECTION_ERROR", "IDEMPOTENCY_IN_PROGRESS"]);
+
+/** True if `err` leaves a billable call's outcome unknown (safe to retry with the
+ * same Idempotency-Key). */
+export function isAmbiguous(err: unknown): boolean {
+  if (!(err instanceof DiagramsAPIError)) return false;
+  return AMBIGUOUS_STATUSES.has(err.status) || AMBIGUOUS_CODES.has(err.code);
 }
 
 // --- response shapes (partial; the API may add fields) ---
@@ -52,8 +66,17 @@ export interface UsageHistoryItem {
 }
 export interface UsageHistorySummary { total_credits_charged: number; task_count: number; }
 export interface UsageHistoryList { items: UsageHistoryItem[]; next_cursor?: string | null; has_more: boolean; summary: UsageHistorySummary; }
-/** One entry in the in-process tally of what each billable task charged. */
-export interface SessionCharge { action: string; diagramId?: string; creditsCharged?: number; creditsRemaining?: number; }
+/** One entry in the in-process tally of what each billable task charged. `status`
+ * is `"unknown"` when the outcome was lost to an ambiguous failure (the server may
+ * or may not have charged — only `usageHistory` is authoritative). */
+export interface SessionCharge {
+  action: string;
+  status: "confirmed" | "unknown";
+  diagramId?: string;
+  creditsCharged?: number;
+  creditsRemaining?: number;
+  note?: string;
+}
 export interface UsageHistoryFilters {
   limit?: number; cursor?: string; action?: string[]; source?: string[];
   diagramId?: string; livemode?: boolean; since?: string; until?: string; includeGrants?: boolean;
@@ -68,7 +91,13 @@ export interface RelayoutStatus {
   progress: number; xml?: string | null; warnings: Warning[]; score?: Score | null;
 }
 
-export interface DiagramsClientOptions { apiKey: string; baseUrl?: string; timeoutMs?: number; maxRetries?: number; backoffMs?: number; }
+export interface DiagramsClientOptions {
+  apiKey: string; baseUrl?: string; timeoutMs?: number; maxRetries?: number; backoffMs?: number;
+  /** Same-key retry delays (ms) for billable calls on ambiguous failures. */
+  retryDelaysMs?: number[];
+  /** Wall-clock ceiling (ms) for one billable call including its retries. */
+  retryBudgetMs?: number;
+}
 
 export class DiagramsClient {
   private apiKey: string;
@@ -76,29 +105,81 @@ export class DiagramsClient {
   private timeoutMs: number;
   private maxRetries: number;
   private backoffMs: number;
+  private retryDelaysMs: number[];
+  private retryBudgetMs: number;
   private clientId = `sdk-ts/${SDK_VERSION}`;
   private userAgent = `@diagrams-so/sdk/${SDK_VERSION}`;
   /** Running tally of what each billable task charged this session — answers
-   * "how much did each task cost?" with no server round-trip. */
+   * "how much did each task cost?" with no server round-trip. Counts only what
+   * THIS process saw; `usageHistory` is the authoritative ledger. */
   public sessionCharges: SessionCharge[] = [];
 
   constructor(opts: DiagramsClientOptions) {
     if (!opts?.apiKey) throw new Error("apiKey is required (dgz_live_… or dgz_test_…)");
     this.apiKey = opts.apiKey;
     this.baseUrl = (opts.baseUrl ?? DEFAULT_BASE).replace(/\/+$/, "");
-    this.timeoutMs = opts.timeoutMs ?? 120_000;
+    // 450s sits ABOVE the server-side timeout ladder (LLM worst-case ~160s <
+    // gunicorn 300s < nginx 330s < ALB 360s) so the client never aborts work the
+    // server would still deliver (and bill for).
+    this.timeoutMs = opts.timeoutMs ?? 450_000;
     this.maxRetries = opts.maxRetries ?? 3;
     this.backoffMs = opts.backoffMs ?? 500;
+    this.retryDelaysMs = opts.retryDelaysMs ?? [5_000, 15_000, 30_000];
+    this.retryBudgetMs = opts.retryBudgetMs ?? 600_000;
   }
 
   /** Record what a billable task charged (from the response `usage` block). */
   private track(action: string, result: any): any {
     const u = result?.usage;
     if (u) this.sessionCharges.push({
-      action, diagramId: result?.id,
+      action, status: "confirmed", diagramId: result?.id,
       creditsCharged: u.credits_charged, creditsRemaining: u.credits_remaining,
     });
     return result;
+  }
+
+  /** Record a billable call whose outcome this process never saw — the server may
+   * or may not have charged; only `usageHistory` knows for sure. */
+  private recordUnknown(action: string, note?: string): void {
+    this.sessionCharges.push({ action, status: "unknown", note });
+  }
+
+  private newKey(): string {
+    const c: any = (globalThis as any).crypto;
+    if (c?.randomUUID) return c.randomUUID();
+    return `idem-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  }
+
+  /** Send a billable call with a fresh Idempotency-Key and bounded same-key retries
+   * on AMBIGUOUS failures (timeout / 5xx / in-progress). A response lost to a
+   * gateway timeout is REPLAYED by the server on retry — one charge, result
+   * recovered; retrying WITHOUT a key would create a second diagram and a second
+   * charge. Definite rejections (401/402/404/422 …) never retry. On final ambiguous
+   * failure the outcome is tallied as `status:"unknown"` and re-thrown — reconcile
+   * against `usageHistory`. */
+  private async requestBillable<T = any>(
+    method: string, path: string,
+    opts: { action: string; query?: Record<string, any>; body?: any; idempotencyKey?: string },
+  ): Promise<T> {
+    const key = opts.idempotencyKey ?? this.newKey();
+    const started = Date.now();
+    let lastErr: unknown;
+    for (let attempt = 0; attempt <= this.retryDelaysMs.length; attempt++) {
+      try {
+        return await this.request<T>(method, path, {
+          query: opts.query, body: opts.body, headers: { "Idempotency-Key": key },
+        });
+      } catch (e) {
+        lastErr = e;
+        const outOfBudget = Date.now() - started + (this.retryDelaysMs[attempt] ?? 0) >= this.retryBudgetMs;
+        if (!isAmbiguous(e) || attempt === this.retryDelaysMs.length || outOfBudget) break;
+        await new Promise((r) => setTimeout(r, this.retryDelaysMs[attempt]));
+      }
+    }
+    if (isAmbiguous(lastErr)) {
+      this.recordUnknown(opts.action, `${(lastErr as DiagramsAPIError).code} after retries — may have been charged`);
+    }
+    throw lastErr;
   }
 
   private async request<T = any>(
@@ -137,6 +218,15 @@ export class DiagramsClient {
           body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
           signal: ctrl.signal,
         });
+      } catch (e: any) {
+        // Map transport failures to typed errors so the billable retry ladder can
+        // classify them (both are AMBIGUOUS — the request may have reached the server).
+        if (e?.name === "AbortError") {
+          throw new DiagramsAPIError("TIMEOUT",
+            `The Diagrams.so API did not respond within ${Math.round(this.timeoutMs / 1000)}s.`, 0);
+        }
+        throw new DiagramsAPIError("CONNECTION_ERROR",
+          `Could not reach the Diagrams.so API at ${this.baseUrl}. (${e?.message ?? e})`, 0);
       } finally {
         clearTimeout(t);
       }
@@ -168,13 +258,12 @@ export class DiagramsClient {
     throw new DiagramsAPIError(e.code ?? "ERROR", e.message ?? text ?? "request failed", status, e.request_id);
   }
 
-  private idem(key?: string) { return key ? { "Idempotency-Key": key } : undefined; }
-
   // -- diagrams --
   async generate(prompt: string, opts: { cloudProvider?: string; diagramType?: string; opinionated?: boolean; idempotencyKey?: string } = {}) {
-    return this.track("generate", await this.request<Diagram>("POST", "/diagrams", {
+    return this.track("generate", await this.requestBillable<Diagram>("POST", "/diagrams", {
+      action: "generate",
       body: { prompt, cloud_provider: opts.cloudProvider ?? "general", diagram_type: opts.diagramType ?? "architecture", opinionated: opts.opinionated ?? false },
-      headers: this.idem(opts.idempotencyKey),
+      idempotencyKey: opts.idempotencyKey,
     })) as Diagram;
   }
   /** Stream a generation as Server-Sent Events. Yields `{event, data}` where
@@ -237,21 +326,27 @@ export class DiagramsClient {
     return this.request("PATCH", `/diagrams/${id}`, { body: { title: patch.title, is_public: patch.isPublic, xml: patch.xml } });
   }
   async edit(id: string, editPrompt: string, opts: { idempotencyKey?: string } = {}) {
-    return this.track("edit", await this.request<Diagram>("POST", `/diagrams/${id}/edit`, { body: { edit_prompt: editPrompt }, headers: this.idem(opts.idempotencyKey) })) as Diagram;
+    return this.track("edit", await this.requestBillable<Diagram>("POST", `/diagrams/${id}/edit`, {
+      action: "edit", body: { edit_prompt: editPrompt }, idempotencyKey: opts.idempotencyKey,
+    })) as Diagram;
   }
   async fix(id: string, message: string, opts: { component?: string; warningType?: string; idempotencyKey?: string } = {}) {
-    return this.track("fix", await this.request<Diagram>("POST", `/diagrams/${id}/fix`, {
-      body: { message, component: opts.component, warning_type: opts.warningType }, headers: this.idem(opts.idempotencyKey),
+    return this.track("fix", await this.requestBillable<Diagram>("POST", `/diagrams/${id}/fix`, {
+      action: "fix", body: { message, component: opts.component, warning_type: opts.warningType }, idempotencyKey: opts.idempotencyKey,
     })) as Diagram;
   }
   warnings(id: string) { return this.request<Warning[]>("GET", `/diagrams/${id}/warnings`); }
 
   // -- async AI re-layout (202 + job_id; poll to completion) --
-  /** Start an async AI re-layout. The first few per diagram are free; once
-   * exhausted the API returns `{status:"confirmation_required"}` — re-call with
-   * `{confirm:true}` to accept the credit charge. */
-  startRelayout(id: string, opts: { confirm?: boolean } = {}) {
-    return this.request<RelayoutJob>("POST", `/diagrams/${id}/relayout`, { query: { confirm: opts.confirm || undefined } });
+  /** Start an async AI re-layout. Re-layout is token-billed on **every** run (no
+   * free allowance): the API returns `{status:"confirmation_required"}` until you
+   * re-call with `{confirm:true}` to accept the charge, which is applied only on
+   * delivery of the re-laid diagram (crash = no charge). Idempotent + same-key
+   * retried like other billable calls. */
+  startRelayout(id: string, opts: { confirm?: boolean; idempotencyKey?: string } = {}) {
+    return this.requestBillable<RelayoutJob>("POST", `/diagrams/${id}/relayout`, {
+      action: "relayout", query: { confirm: opts.confirm || undefined }, idempotencyKey: opts.idempotencyKey,
+    });
   }
   /** Poll a re-layout job. On `status:"done"` with `applied:true`, the result
    * includes the re-laid `xml` + fresh `warnings`/`score`. */
@@ -260,16 +355,22 @@ export class DiagramsClient {
   }
   /** Convenience: start a re-layout and poll until it reaches a terminal state
    * (`done`/`failed`) or `timeoutMs` elapses. If the API asks for confirmation,
-   * that response is returned as-is (re-call with `{confirm:true}`). */
-  async relayoutAndWait(id: string, opts: { confirm?: boolean; pollIntervalMs?: number; timeoutMs?: number } = {}): Promise<RelayoutJob | RelayoutStatus> {
-    const started = await this.startRelayout(id, { confirm: opts.confirm });
+   * that response is returned as-is (re-call with `{confirm:true}`). If the poll
+   * budget expires the charge may still land on delivery, so it is recorded as
+   * `status:"unknown"` in `sessionCharges` before a TIMEOUT is thrown. */
+  async relayoutAndWait(id: string, opts: { confirm?: boolean; pollIntervalMs?: number; timeoutMs?: number; idempotencyKey?: string } = {}): Promise<RelayoutJob | RelayoutStatus> {
+    const started = await this.startRelayout(id, { confirm: opts.confirm, idempotencyKey: opts.idempotencyKey });
     if (started.status === "confirmation_required" || !started.job_id) return started;
     const interval = opts.pollIntervalMs ?? 3000;
     const deadline = Date.now() + (opts.timeoutMs ?? 300_000);
     for (;;) {
       const st = await this.relayoutStatus(id, started.job_id);
-      if (st.status === "done" || st.status === "failed") return st;
-      if (Date.now() >= deadline) throw new DiagramsAPIError("TIMEOUT", "re-layout did not finish in time", 0);
+      if (st.status === "done") { this.track("relayout", st); return st; } // track no-ops without `usage`
+      if (st.status === "failed") return st;
+      if (Date.now() >= deadline) {
+        if (opts.confirm) this.recordUnknown("relayout", "poll budget expired — may have been charged on delivery");
+        throw new DiagramsAPIError("TIMEOUT", "re-layout did not finish in time", 0);
+      }
       await new Promise((r) => setTimeout(r, interval));
     }
   }

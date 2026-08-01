@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "diagrams-so"
-version = "1.0.0"
+version = "1.1.0"
 description = "Python SDK for the Diagrams.so public API — generate, edit, and manage cloud architecture diagrams with AI."
 readme = "README.md"
 requires-python = ">=3.8"
@@ -16,7 +16,7 @@ dependencies = []  # stdlib-only; uses `requests` if present, else urllib
 
 [project.urls]
 Homepage = "https://diagrams.so"
-Documentation = "https://developers.diagrams.so"
+Documentation = "https://diagrams.so/developers"
 Repository = "https://github.com/RedHold/diagrams-sdk"
 Issues = "https://github.com/RedHold/diagrams-sdk/issues"
 

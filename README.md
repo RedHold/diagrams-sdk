@@ -12,7 +12,7 @@ Official **Python** and **TypeScript** SDKs for the [Diagrams.so](https://diagra
 | Python | [`diagrams-so`](https://pypi.org/project/diagrams-so/) | [`python/`](./python) |
 | TypeScript | [`@diagrams-so/sdk`](https://www.npmjs.com/package/@diagrams-so/sdk) | [`typescript/`](./typescript) |
 
-Both are thin, typed clients covering **all 26** `/api/v2` operations, with retry/backoff, idempotency keys, SSE streaming, and an async re-layout helper.
+Both are thin, typed clients covering **all 27** `/api/v2` operations, with auto same-key idempotent retries on ambiguous billable failures (never double-charge on a timeout), `429`/`503` backoff, SSE streaming, an async re-layout helper, and an in-process credit tally.
 
 ## Quickstart
 
@@ -56,4 +56,4 @@ CI publishes on a version tag **if** the registry token secret is set:
 - `sdk-ts-vX.Y.Z` → npm (needs `NPM_TOKEN`)
 
 ## License
-[Apache-2.0](./LICENSE) · docs at [developers.diagrams.so](https://developers.diagrams.so)
+[Apache-2.0](./LICENSE) · docs at [diagrams.so/developers](https://diagrams.so/developers)

@@ -9,8 +9,9 @@ import pytest
 
 SPEC = Path(__file__).resolve().parents[2] / "spec" / "openapi-v2.json"
 
-# The 26 operations the client covers, as (METHOD, path) pairs.
+# The 27 operations the client covers, as (METHOD, path) pairs.
 COVERED = {
+    ("GET", "/api/v2/usage/history"),
     ("POST", "/api/v2/diagrams"),
     ("GET", "/api/v2/diagrams"),
     ("POST", "/api/v2/diagrams/import"),
