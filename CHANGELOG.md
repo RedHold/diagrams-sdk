@@ -9,17 +9,29 @@ Billing-integrity hardening, aligned with the API's 2026-08 audit remediation
   502/503/504, idempotency-in-progress) with the **same key** — a response lost to a
   gateway timeout is replayed by the server, so there is one charge, never two.
   Definite rejections (401/402/404/422) are never retried. Bounded by `retry_delays`
-  / `retry_budget` (Python) and `retryDelaysMs` / `retryBudgetMs` (TS).
+  / `retry_budget` (Python) and `retryDelaysMs` / `retryBudgetMs` (TS). Billable `5xx`
+  retries go through this single idempotent ladder (`429` still honors `Retry-After`
+  via the inner loop), so a transient error is never retried by two layers; reads keep
+  retrying `429`/`503`.
 - **Honest session tally.** `session_charges` / `sessionCharges` entries carry a
   `status` of `"confirmed"` or `"unknown"`; a call whose outcome is lost is recorded
   as `unknown` (may still have been charged) rather than silently dropped. The server
-  ledger (`usage_history`) is authoritative.
+  ledger (`usage_history`) is authoritative. **Every billable surface now feeds the
+  tally**: streamed generations record a `confirmed` charge on their terminal event,
+  and an applied chargeable re-layout records an `unknown` entry (its credits bill
+  asynchronously and live only in `usage_history`) — using the server's `chargeable`
+  verdict, matching the MCP client.
 - **Timeout ladder.** Default request timeout raised 120s → **450s**, above the
   server-side ladder (gunicorn 300 < nginx 330 < ALB 360), so the client never aborts
   work the server would still deliver. Transport timeouts / connection failures now
   surface as typed `TIMEOUT` / `CONNECTION_ERROR` errors.
 - **Re-layout is token-billed on every run** (no free allowance) and charged only on
-  delivery — docs/examples updated; `confirm=true` required to accept the charge.
+  delivery — docs/examples updated; `confirm=true` required to accept the charge. The
+  API echoes `chargeable` on start; the SDK uses it to tally honestly.
+- `/usage` `cost_estimates` now covers **generate / edit / fix / relayout** at the
+  true tiered **0.5–3.0** range (fractional credits like `0.5` are real) — surfaced
+  as-is. Well-Architected `score` excludes `type == "suggestion"` warnings; the SDK
+  returns warnings (including `suggestion`) and the score verbatim.
 - Vendored spec re-synced to **27 operations** (adds `GET /usage/history`, which the
   client already exposes via `usage_history` / `iter_usage_history`); drift-guards
   updated to match.

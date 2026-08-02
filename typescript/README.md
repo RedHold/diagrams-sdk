@@ -52,7 +52,9 @@ await client.generate("…", { idempotencyKey: "order-42" }); // server replays 
 ```
 Definite rejections (`401`/`402`/`404`/`422`) are never retried; a call whose outcome
 is lost is recorded in `client.sessionCharges` as `status:"unknown"` — reconcile with
-`client.usageHistory()`.
+`client.usageHistory()`. Streamed generations tally a `confirmed` charge on their
+terminal event; an applied re-layout tallies `unknown` (its credits bill
+asynchronously — the exact amount is in `usageHistory`).
 
 ## Streaming
 ```ts
@@ -95,9 +97,10 @@ new DiagramsClient({ apiKey, baseUrl?, timeoutMs?, maxRetries?, backoffMs?,
 `timeoutMs` defaults to **450 000** (above the server-side timeout ladder, so the
 client never aborts work the server would still deliver). `baseUrl` defaults to
 `https://api.diagrams.so/api/v2` (point at `http://localhost:8000/api/v2` for local
-dev). Non-billable calls retry `429`/`503` (honoring `Retry-After`); billable calls
-additionally retry *ambiguous* failures with the same idempotency key (`retryDelaysMs`
-between attempts, capped at `retryBudgetMs` total).
+dev). Reads retry `429`/`503` (honoring `Retry-After`). Billable calls retry `429` the
+same way and every *ambiguous* failure (timeout / `502`/`503`/`504` / in-progress)
+through the same-key idempotent ladder (`retryDelaysMs` between attempts, capped at
+`retryBudgetMs` total) — a **single** retry layer, so a busy server is never poked twice.
 
 ## Full method list
 `generate` · `generateStream` · `list` · `get` · `update` · `delete` · `edit` · `fix` · `warnings` · `startRelayout` · `relayoutStatus` · `relayoutAndWait` · `export` · `versions` · `getVersion` · `revert` · `import` · `searchGallery` · `fork` · `enhancePrompt` · `clarifyPrompt` · `usage` · `usageHistory` · `iterUsageHistory` · `me` · `meta`

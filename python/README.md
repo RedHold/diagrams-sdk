@@ -56,7 +56,9 @@ client.generate("…", idempotency_key="order-42")   # server replays the stored
 ```
 Definite rejections (`401`/`402`/`404`/`422`) are never retried; a call whose outcome
 is lost is recorded in `session_charges` as `status="unknown"` — reconcile with
-`client.usage_history()`.
+`client.usage_history()`. Streamed generations tally a `confirmed` charge on their
+terminal event; an applied re-layout tallies `unknown` (its credits bill
+asynchronously — the exact amount is in `usage_history`).
 
 ## Streaming
 ```python
@@ -100,10 +102,12 @@ DiagramsClient(api_key, base_url="https://api.diagrams.so/api/v2",
                retry_delays=(5.0, 15.0, 30.0), retry_budget=600.0)
 ```
 `timeout` defaults to **450s**, above the server-side timeout ladder, so the client
-never aborts work the server would still deliver. Non-billable calls retry `429`/`503`
-(honoring `Retry-After`); billable calls additionally retry *ambiguous* failures with
-the same idempotency key (`retry_delays` between attempts, capped at `retry_budget`
-seconds total). Point `base_url` at `http://localhost:8000/api/v2` for local development.
+never aborts work the server would still deliver. Reads retry `429`/`503` (honoring
+`Retry-After`). Billable calls retry `429` the same way and every *ambiguous* failure
+(timeout / `502`/`503`/`504` / in-progress) through the same-key idempotent ladder
+(`retry_delays` between attempts, capped at `retry_budget` seconds) — a **single** retry
+layer, so a busy server is never poked twice. Point `base_url` at
+`http://localhost:8000/api/v2` for local development.
 
 ## Full method list
 `generate` · `generate_stream` · `list` · `get` · `update` · `delete` · `edit` · `fix` · `warnings` · `relayout` · `relayout_status` · `relayout_and_wait` · `export` · `versions` · `get_version` · `revert` · `import_diagram` · `search_gallery` · `fork` · `enhance_prompt` · `clarify_prompt` · `usage` · `usage_history` · `iter_usage_history` · `me` · `meta` — each maps 1:1 to an endpoint.

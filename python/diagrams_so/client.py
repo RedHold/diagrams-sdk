@@ -73,7 +73,8 @@ class DiagramsClient:
     # -- transport ---------------------------------------------------------
     def _request(self, method: str, path: str, *, params: Optional[dict] = None,
                  body: Optional[dict] = None, raw: bool = False,
-                 extra_headers: Optional[dict] = None):
+                 extra_headers: Optional[dict] = None,
+                 retry_statuses: "tuple[int, ...]" = (429, 503)):
         url = self.base_url + path
         if params:
             params = {k: v for k, v in params.items() if v is not None}
@@ -88,7 +89,7 @@ class DiagramsClient:
             data = _json.dumps(body).encode()
             headers["Content-Type"] = "application/json"
 
-        status, resp_headers, text = self._send_retrying(method, url, headers, data)
+        status, resp_headers, text = self._send_retrying(method, url, headers, data, retry_statuses)
         if raw:
             if status >= 400:
                 self._raise(status, text)
@@ -108,15 +109,17 @@ class DiagramsClient:
         raise DiagramsAPIError(err.get("code", "ERROR"), err.get("message", text or "request failed"),
                                status, err.get("request_id"))
 
-    def _send_retrying(self, method, url, headers, data):
-        """Send with bounded retries on 429/503 only. Those are pre-processing
-        rejections (rate limit / backpressure), so retrying never double-charges a
-        billable op. Honors ``Retry-After``; otherwise exponential backoff."""
+    def _send_retrying(self, method, url, headers, data, retry_statuses=(429, 503)):
+        """Send with bounded retries on the given transient statuses (pre-processing
+        rejections — rate limit / backpressure — so retrying never double-charges).
+        Honors ``Retry-After``; otherwise exponential backoff. Billable calls pass
+        ``(429,)`` so ``503`` is handled once by the idempotent ladder instead of
+        being retried by both layers."""
         import time
         attempt = 0
         while True:
             status, resp_headers, text = self._send(method, url, headers, data)
-            if status in (429, 503) and attempt < self.max_retries:
+            if status in retry_statuses and attempt < self.max_retries:
                 ra = resp_headers.get("retry-after")
                 delay = float(ra) if ra and ra.isdigit() else self.backoff * (2 ** attempt)
                 time.sleep(min(delay, 30.0))
@@ -207,8 +210,11 @@ class DiagramsClient:
         last_err: Optional[Exception] = None
         for attempt in range(len(self.retry_delays) + 1):
             try:
+                # retry_statuses=(429,): 503 is left to this idempotent ladder so it
+                # isn't retried by both the inner Retry-After loop and here.
                 return self._request(method, path, body=body, params=params,
-                                     extra_headers={"Idempotency-Key": key})
+                                     extra_headers={"Idempotency-Key": key},
+                                     retry_statuses=(429,))
             except DiagramsAPIError as e:
                 last_err = e
                 if attempt == len(self.retry_delays) or not is_ambiguous(e):
@@ -259,6 +265,11 @@ class DiagramsClient:
         data = _json.dumps(body).encode()
         url = self.base_url + "/diagrams/stream"
         for event, payload in self._sse(url, headers, data):
+            if event == "complete":
+                # A streamed generation is billable; the terminal event carries the
+                # `usage` block, so record it as a confirmed charge (parity with the
+                # non-streaming generate()).
+                self._track("generate", payload)
             yield event, payload
 
     def _sse(self, url, headers, data):
@@ -369,18 +380,35 @@ class DiagramsClient:
         if started.get("status") == "confirmation_required" or "job_id" not in started:
             return started
         job_id = started["job_id"]
+        chargeable = started.get("chargeable")   # the server's verdict, echoed on start
         deadline = time.monotonic() + timeout
-        while True:
-            st = self.relayout_status(diagram_id, job_id)
-            if st.get("status") in ("done", "failed"):
-                if st.get("status") == "done":
-                    self._track("relayout", st)  # no-op unless the payload carries `usage`
-                return st
-            if time.monotonic() >= deadline:
-                if confirm:
-                    self._track_unknown("relayout", note="poll budget expired — may have been charged on delivery")
-                raise DiagramsAPIError("TIMEOUT", "re-layout did not finish in time", 0)
-            time.sleep(poll_interval)
+        recorded = False
+        try:
+            while True:
+                st = self.relayout_status(diagram_id, job_id)
+                if st.get("status") in ("done", "failed"):
+                    if st.get("status") == "done" and chargeable:
+                        # The re-layout charge bills asynchronously and isn't in the
+                        # poll response, so the exact credits are unknown to this
+                        # process — the ledger (usage_history) has them. Mirrors MCP.
+                        self._track_unknown("relayout",
+                                            note="chargeable re-layout applied; exact credits are in usage_history")
+                        recorded = True
+                    return st
+                if time.monotonic() >= deadline:
+                    if chargeable:
+                        self._track_unknown("relayout",
+                                            note="chargeable re-layout still running when the wait elapsed; check usage_history")
+                        recorded = True
+                    raise DiagramsAPIError("TIMEOUT", "re-layout did not finish in time", 0)
+                time.sleep(poll_interval)
+        except DiagramsAPIError:
+            # A polling error leaves the outcome unknown: the job may still complete
+            # and bill server-side. Record it once (unless already recorded above).
+            if chargeable and not recorded:
+                self._track_unknown("relayout",
+                                    note="re-layout polling failed; the job may still complete and charge — check usage_history")
+            raise
 
     def export(self, diagram_id: str, fmt: str = "drawio") -> str:
         """Return the raw diagram file (drawio XML or SVG)."""

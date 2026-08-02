@@ -166,8 +166,10 @@ export class DiagramsClient {
     let lastErr: unknown;
     for (let attempt = 0; attempt <= this.retryDelaysMs.length; attempt++) {
       try {
+        // retryStatuses [429]: 503 is left to this idempotent ladder so it isn't
+        // retried by both the inner Retry-After loop and here.
         return await this.request<T>(method, path, {
-          query: opts.query, body: opts.body, headers: { "Idempotency-Key": key },
+          query: opts.query, body: opts.body, headers: { "Idempotency-Key": key }, retryStatuses: [429],
         });
       } catch (e) {
         lastErr = e;
@@ -184,7 +186,7 @@ export class DiagramsClient {
 
   private async request<T = any>(
     method: string, path: string,
-    opts: { query?: Record<string, any>; body?: any; raw?: boolean; headers?: Record<string, string> } = {},
+    opts: { query?: Record<string, any>; body?: any; raw?: boolean; headers?: Record<string, string>; retryStatuses?: number[] } = {},
   ): Promise<T> {
     let url = this.baseUrl + path;
     if (opts.query) {
@@ -206,8 +208,10 @@ export class DiagramsClient {
     };
     if (opts.body !== undefined) headers["Content-Type"] = "application/json";
 
-    // Retry only on 429/503 — pre-processing rejections (rate limit / backpressure),
-    // so a retry never double-charges a billable op. Honors Retry-After.
+    // Retry transient statuses — pre-processing rejections (rate limit / backpressure),
+    // so a retry never double-charges. Honors Retry-After. Billable calls pass `[429]`
+    // so `503` is handled once by the idempotent ladder, not by both layers.
+    const retryOn = opts.retryStatuses ?? [429, 503];
     let resp!: Response;
     for (let attempt = 0; ; attempt++) {
       const ctrl = new AbortController();
@@ -230,7 +234,7 @@ export class DiagramsClient {
       } finally {
         clearTimeout(t);
       }
-      if ((resp.status === 429 || resp.status === 503) && attempt < this.maxRetries) {
+      if (retryOn.includes(resp.status) && attempt < this.maxRetries) {
         const ra = Number(resp.headers.get("retry-after"));
         const delay = Number.isFinite(ra) && ra > 0 ? ra * 1000 : this.backoffMs * 2 ** attempt;
         await new Promise((r) => setTimeout(r, Math.min(delay, 30_000)));
@@ -314,7 +318,12 @@ export class DiagramsClient {
           else if (line.startsWith("data: ")) dataLines.push(line.slice(6));
         }
         if (dataLines.length) {
-          try { yield { event: ev, data: JSON.parse(dataLines.join("")) }; } catch { /* skip malformed */ }
+          let parsed: any;
+          try { parsed = JSON.parse(dataLines.join("")); } catch { continue; /* skip malformed */ }
+          // A streamed generation is billable; the terminal event carries `usage`,
+          // so record it as a confirmed charge (parity with non-streaming generate()).
+          if (ev === "complete") this.track("generate", parsed);
+          yield { event: ev, data: parsed };
         }
       }
     }
@@ -361,17 +370,33 @@ export class DiagramsClient {
   async relayoutAndWait(id: string, opts: { confirm?: boolean; pollIntervalMs?: number; timeoutMs?: number; idempotencyKey?: string } = {}): Promise<RelayoutJob | RelayoutStatus> {
     const started = await this.startRelayout(id, { confirm: opts.confirm, idempotencyKey: opts.idempotencyKey });
     if (started.status === "confirmation_required" || !started.job_id) return started;
+    const chargeable = started.chargeable;   // the server's verdict, echoed on start
     const interval = opts.pollIntervalMs ?? 3000;
     const deadline = Date.now() + (opts.timeoutMs ?? 300_000);
-    for (;;) {
-      const st = await this.relayoutStatus(id, started.job_id);
-      if (st.status === "done") { this.track("relayout", st); return st; } // track no-ops without `usage`
-      if (st.status === "failed") return st;
-      if (Date.now() >= deadline) {
-        if (opts.confirm) this.recordUnknown("relayout", "poll budget expired — may have been charged on delivery");
-        throw new DiagramsAPIError("TIMEOUT", "re-layout did not finish in time", 0);
+    let recorded = false;
+    try {
+      for (;;) {
+        const st = await this.relayoutStatus(id, started.job_id);
+        if (st.status === "done") {
+          // The re-layout charge bills asynchronously and isn't in the poll response,
+          // so the exact credits are unknown to this process — usageHistory has them.
+          if (chargeable) { this.recordUnknown("relayout", "chargeable re-layout applied; exact credits are in usageHistory"); recorded = true; }
+          return st;
+        }
+        if (st.status === "failed") return st;
+        if (Date.now() >= deadline) {
+          if (chargeable) { this.recordUnknown("relayout", "chargeable re-layout still running when the wait elapsed; check usageHistory"); recorded = true; }
+          throw new DiagramsAPIError("TIMEOUT", "re-layout did not finish in time", 0);
+        }
+        await new Promise((r) => setTimeout(r, interval));
       }
-      await new Promise((r) => setTimeout(r, interval));
+    } catch (e) {
+      // A polling error leaves the outcome unknown: the job may still complete and
+      // bill server-side. Record it once (unless already recorded above).
+      if (chargeable && !recorded && e instanceof DiagramsAPIError) {
+        this.recordUnknown("relayout", "re-layout polling failed; the job may still complete and charge — check usageHistory");
+      }
+      throw e;
     }
   }
   export(id: string, format: "drawio" | "svg" = "drawio") { return this.request<string>("GET", `/diagrams/${id}/export`, { query: { format }, raw: true }); }
