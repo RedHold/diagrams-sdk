@@ -8,7 +8,7 @@ retries, honest tally, timeout ladder, no-free-relayout).
 > A live smoke against the real API (which **does** spend credits) is optional and
 > covered last.
 
-**Prerequisites:** Python ≥ 3.8, Node ≥ 18. From the repo root unless noted.
+**Prerequisites:** Python ≥ 3.9, Node ≥ 18. From the repo root unless noted.
 
 ---
 

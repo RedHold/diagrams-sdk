@@ -38,11 +38,11 @@ New to terminals? You only ever *copy → paste → Enter*. Nothing here can har
 
 ## 0. Check you're ready
 
-You need **Python 3.8+** (for the Python SDK) and/or **Node.js 18+** (for the TypeScript SDK). You only need the one(s) you want to try.
+You need **Python 3.9+** (for the Python SDK) and/or **Node.js 18+** (for the TypeScript SDK). You only need the one(s) you want to try.
 
 🖥️ **Terminal** — check what you have:
 ```bash
-python3 --version      # want 3.8 or higher
+python3 --version      # want 3.9 or higher
 node --version         # want v18 or higher
 git --version          # any version
 ```
