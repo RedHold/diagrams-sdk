@@ -20,7 +20,7 @@
   ],
   "scripts": {
     "build": "tsc",
-    "test": "node --test test/",
+    "test": "node --test",
     "prepublishOnly": "npm run build"
   },
   "keywords": [

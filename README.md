@@ -67,8 +67,9 @@ cd diagrams-sdk
 ```bash
 python3 -m venv .venv                 # make an isolated Python environment (once)
 source .venv/bin/activate             # turn it on  ·  Windows: .venv\Scripts\activate
+python -m pip install --upgrade pip   # old pip can't install a pyproject-only editable package
 pip install -e ./python               # install the SDK from this folder
-pip install requests                  # optional (faster HTTP; it works without it too)
+pip install pytest requests           # test tools + faster HTTP (both optional)
 ```
 ✅ Your prompt now starts with `(.venv)`. That means the environment is on. **Re-run `source .venv/bin/activate` whenever you open a new terminal.**
 
@@ -135,10 +136,13 @@ except DiagramsAPIError as e:
 did = d["id"]
 print("generated", did, "| score", d["score"]["score"], "| charged", d["usage"]["credits_charged"])
 
-# ---- warnings + fix (fix is BILLABLE) ----
+# ---- warnings + fix (fix is BILLABLE — each fix is one paid AI call) ----
+# get_warnings is free. Fix ONLY the warnings you care about, one at a time —
+# each client.fix() is a separate charge. Never loop-fix every warning (that's how
+# a 7-warning diagram turns into 7 charges); this is exactly how the site/MCP work.
 warnings = client.warnings(did)
 if warnings:
-    w = warnings[0]
+    w = warnings[0]                    # fix just the first (most important) one
     client.fix(did, w["message"], component=w.get("component"), warning_type=w["type"])
 
 # ---- edit (BILLABLE) ----
@@ -241,7 +245,10 @@ try {
 const id = d.id;
 console.log("generated", id, "| score", d.score?.score, "| charged", d.usage?.credits_charged);
 
-// ---- warnings + fix (fix is BILLABLE) ----
+// ---- warnings + fix (fix is BILLABLE — each fix is one paid AI call) ----
+// warnings() is free. Fix ONLY the warnings you care about, one at a time — each
+// fix() is a separate charge. Never loop-fix every warning (7 warnings = 7 charges);
+// this mirrors how the site/MCP work.
 const warnings = await client.warnings(id);
 if (warnings.length) {
   const w = warnings[0];
