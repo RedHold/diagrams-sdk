@@ -2,10 +2,11 @@
 
 A thin, typed, **dependency-free** client for the [Diagrams.so](https://diagrams.so) public API (`/api/v2`). Generate, edit, and manage cloud-architecture diagrams (draw.io / SVG) with AI.
 
-- Covers **all 26** `/api/v2` operations · one method per endpoint
+- Covers **all 27** `/api/v2` operations · one method per endpoint
 - **No hard dependencies** — uses `requests` if installed, else stdlib `urllib`
 - Typed, ships `py.typed` · raises a single `DiagramsAPIError` with `code` / `status` / `request_id`
-- Built-in **retry** on `429`/`503` (honors `Retry-After`), **idempotency keys**, **SSE streaming**, and an async **re-layout** poll helper
+- **Safe billing:** every billable call auto-attaches an `Idempotency-Key` and retries *ambiguous* failures (timeout / 5xx / in-progress) with the **same key**, so a response lost to a gateway timeout is replayed — one charge, never two
+- Built-in `429`/`503` backoff (honors `Retry-After`), **SSE streaming**, async **re-layout** helper, and an in-process credit tally (`session_charges`)
 
 ## Install
 ```bash
@@ -17,7 +18,7 @@ pip install diagrams-so
 ```python
 from diagrams_so import DiagramsClient
 
-client = DiagramsClient(api_key="dgz_live_…")   # or dgz_test_… (sandbox, never billed)
+client = DiagramsClient(api_key="dgz_live_…")   # or dgz_test_… (test mode — bills the same credits)
 
 d = client.generate("AWS 3-tier web app: ALB, EC2, RDS", cloud_provider="aws")
 print(d["id"], d["score"]["score"], len(d["warnings"]))
@@ -31,7 +32,7 @@ open("diagram.drawio", "w").write(client.export(d["id"], "drawio"))
 ```
 
 ## Authentication & billing
-Pass your key (from the **API Keys** page in your account). `dgz_live_` keys bill credits for `generate`/`edit`/`fix`/`relayout`/`fork`; `dgz_test_` keys are a no-bill sandbox. Reads and `enhance`/`clarify` are free. Check balance with `client.usage()`.
+Pass your key (from the **API Keys** page in your account). `dgz_live_` keys bill credits for `generate`/`edit`/`fix`/`relayout`/`fork`; `dgz_test_` keys are test mode — they bill the same credits (drawing your real balance, like a live key), at lower test rate limits. Reads and `enhance`/`clarify` are free. Check balance with `client.usage()`.
 
 ## Errors
 Every non-2xx raises `DiagramsAPIError`:
@@ -46,10 +47,18 @@ except DiagramsAPIError as e:
 ```
 
 ## Idempotency (safe retries on billable ops)
+Every billable call (`generate`, `edit`, `fix`, `relayout`) **auto-attaches a fresh
+`Idempotency-Key`** and retries ambiguous failures with that same key, so you never
+double-charge on a timeout. Pass your own key to make the safety window explicit or
+to dedupe across processes:
 ```python
-client.generate("…", idempotency_key="order-42")   # replays the stored result for 24h
+client.generate("…", idempotency_key="order-42")   # server replays the stored result for 24h
 ```
-Supported on `generate`, `generate_stream`, `edit`, `fix`.
+Definite rejections (`401`/`402`/`404`/`422`) are never retried; a call whose outcome
+is lost is recorded in `session_charges` as `status="unknown"` — reconcile with
+`client.usage_history()`. Streamed generations tally a `confirmed` charge on their
+terminal event; an applied re-layout tallies `unknown` (its credits bill
+asynchronously — the exact amount is in `usage_history`).
 
 ## Streaming
 ```python
@@ -64,9 +73,12 @@ for event, data in client.generate_stream("AWS event-driven pipeline"):
 The diagram XML arrives only in the terminal `complete` event (after the charge).
 
 ## Async re-layout
+Re-layout is token-billed on **every** run (no free allowance) and charged only on
+delivery of the re-laid diagram. The first call returns `confirmation_required`;
+re-call with `confirm=True` to accept the charge:
 ```python
 job = client.relayout_and_wait(d["id"])           # starts + polls to completion
-if job.get("status") == "confirmation_required":  # free tier exhausted
+if job.get("status") == "confirmation_required":  # re-layout always needs confirmation
     job = client.relayout_and_wait(d["id"], confirm=True)
 ```
 
@@ -86,12 +98,19 @@ while True:
 ## Config, retries & timeouts
 ```python
 DiagramsClient(api_key, base_url="https://api.diagrams.so/api/v2",
-               timeout=120.0, max_retries=3, backoff=0.5)
+               timeout=450.0, max_retries=3, backoff=0.5,
+               retry_delays=(5.0, 15.0, 30.0), retry_budget=600.0)
 ```
-Only `429`/`503` are retried (rate-limit / backpressure are pre-charge rejections, so a retry never double-bills); `Retry-After` is honored. Point `base_url` at `http://localhost:8000/api/v2` for local development.
+`timeout` defaults to **450s**, above the server-side timeout ladder, so the client
+never aborts work the server would still deliver. Reads retry `429`/`503` (honoring
+`Retry-After`). Billable calls retry `429` the same way and every *ambiguous* failure
+(timeout / `502`/`503`/`504` / in-progress) through the same-key idempotent ladder
+(`retry_delays` between attempts, capped at `retry_budget` seconds) — a **single** retry
+layer, so a busy server is never poked twice. Point `base_url` at
+`http://localhost:8000/api/v2` for local development.
 
 ## Full method list
-`generate` · `generate_stream` · `list` · `get` · `update` · `delete` · `edit` · `fix` · `warnings` · `relayout` · `relayout_status` · `relayout_and_wait` · `export` · `versions` · `get_version` · `revert` · `import_diagram` · `search_gallery` · `fork` · `enhance_prompt` · `clarify_prompt` · `usage` · `me` · `meta` — each maps 1:1 to an endpoint.
+`generate` · `generate_stream` · `list` · `get` · `update` · `delete` · `edit` · `fix` · `warnings` · `relayout` · `relayout_status` · `relayout_and_wait` · `export` · `versions` · `get_version` · `revert` · `import_diagram` · `search_gallery` · `fork` · `enhance_prompt` · `clarify_prompt` · `usage` · `usage_history` · `iter_usage_history` · `me` · `meta` — each maps 1:1 to an endpoint.
 
 ## License
-MIT · docs at [developers.diagrams.so](https://developers.diagrams.so)
+Apache-2.0 · docs at [diagrams.so/developers](https://diagrams.so/developers)

@@ -1,6 +1,6 @@
 {
   "name": "@diagrams-so/sdk",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "TypeScript SDK for the Diagrams.so public API \u2014 generate, edit, and manage cloud architecture diagrams with AI.",
   "type": "module",
   "main": "dist/index.js",
@@ -14,11 +14,13 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "LICENSE",
+    "NOTICE"
   ],
   "scripts": {
     "build": "tsc",
-    "test": "node --test test/",
+    "test": "node --test",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
@@ -31,7 +33,7 @@
     "ai",
     "diagrams.so"
   ],
-  "license": "MIT",
+  "license": "Apache-2.0",
   "author": "RedHold / Diagrams.so",
   "homepage": "https://diagrams.so",
   "engines": {

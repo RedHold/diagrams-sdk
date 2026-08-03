@@ -5,4 +5,11 @@ __pycache__/
 build/
 *.tgz
 .pytest_cache/
-.venv/
+.venv*/
+
+# local run artifacts from the README walkthroughs (try_all/try_sdk) + generated diagrams
+try_all.py
+try_all.mjs
+try_sdk.py
+diagram.drawio
+diagram.svg
