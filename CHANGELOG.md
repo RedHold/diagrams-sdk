@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.2.0] — 2026-08
+Device-flow login (RFC 8628) — both SDKs, zero new runtime dependencies.
+
+- **`login()`** (`diagrams_so.login()` / `login()` in TS): starts the OAuth device
+  flow, prints the one-time code + verification URL, opens the browser
+  (best-effort), polls honoring the server `interval` and `slow_down` (+5s), and
+  returns a ready client. `test=True` mints a test-mode key (test keys charge the
+  same credits as live — not a free sandbox). Clear errors on denial, expiry, and
+  the 25-active-key limit.
+- **Shared credential cache** at `~/.diagrams-so/credentials.json` (identical v1
+  JSON contract across Python and TS), written atomically with dir `0700` / file
+  `0600`. **Client credential resolution**: explicit `api_key` > `DIAGRAMS_API_KEY`
+  env > cache (ignored if malformed, wrong version, or minted for a different
+  `base_url`); otherwise: "Not connected — call login() or set DIAGRAMS_API_KEY."
+- **`logout()`** deletes the cache (idempotent).
+- **`DiagramsAPIError.upgrade_url`** / **`.upgradeUrl`**: the upgrade link from a
+  402 `QUOTA_EXCEEDED` payload, else `None`/`undefined`.
+- Spec/drift-guard: the 5 new `/oauth/device/*` operations are tracked; the SDKs
+  cover `code` + `token`, while the consent endpoints (`info`/`approve`/`deny`)
+  are web-only and explicitly excluded.
+
 ## [1.1.0] — 2026-08
 Billing-integrity hardening, aligned with the API's 2026-08 audit remediation
 (app-core #782) and the MCP client (diagrams-mcp-app-core #5).

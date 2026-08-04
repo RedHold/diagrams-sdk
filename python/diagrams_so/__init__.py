@@ -10,7 +10,9 @@ API's error code, HTTP status, and request_id. Reads are free; generate/edit/fix
 fork cost credits.
 """
 
+from .auth import DiagramsAuthError, login, logout
 from .client import DiagramsAPIError, DiagramsClient, is_ambiguous
 
-__all__ = ["DiagramsClient", "DiagramsAPIError", "is_ambiguous"]
-__version__ = "1.1.0"
+__all__ = ["DiagramsClient", "DiagramsAPIError", "DiagramsAuthError",
+           "is_ambiguous", "login", "logout"]
+__version__ = "1.2.0"

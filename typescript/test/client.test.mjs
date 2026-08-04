@@ -2,9 +2,10 @@
 // global fetch. Run: npm run build && npm test  (node --test).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, mkdtempSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
+import { dirname, resolve, join } from "node:path";
+import { tmpdir } from "node:os";
 
 import { DiagramsClient, DiagramsAPIError } from "../dist/index.js";
 
@@ -27,8 +28,16 @@ function mockFetch(sequence) {
   return calls;
 }
 
-test("requires an apiKey", () => {
-  assert.throws(() => new DiagramsClient({ apiKey: "" }));
+test("requires an apiKey (no env, no login cache)", (t) => {
+  // Isolate from the login() cache and env so "no credentials anywhere" is real.
+  const { HOME, DIAGRAMS_API_KEY } = process.env;
+  process.env.HOME = mkdtempSync(join(tmpdir(), "dgz-nocreds-"));
+  delete process.env.DIAGRAMS_API_KEY;
+  t.after(() => {
+    process.env.HOME = HOME;
+    if (DIAGRAMS_API_KEY !== undefined) process.env.DIAGRAMS_API_KEY = DIAGRAMS_API_KEY;
+  });
+  assert.throws(() => new DiagramsClient({ apiKey: "" }), /Not connected/);
 });
 
 test("generate posts body + Idempotency-Key header", async () => {
@@ -75,6 +84,8 @@ test("does not retry on 4xx other than 429", async () => {
 const SPEC = resolve(__dirname, "../../spec/openapi-v2.json");
 const COVERED = new Set([
   "GET /api/v2/usage/history",
+  "POST /api/v2/oauth/device/code", "POST /api/v2/oauth/device/token", // login() device flow
+
   "POST /api/v2/diagrams", "GET /api/v2/diagrams", "POST /api/v2/diagrams/import",
   "POST /api/v2/diagrams/stream", "GET /api/v2/diagrams/{diagram_id}",
   "DELETE /api/v2/diagrams/{diagram_id}", "PATCH /api/v2/diagrams/{diagram_id}",
@@ -88,6 +99,15 @@ const COVERED = new Set([
   "POST /api/v2/prompts/clarify", "POST /api/v2/prompts/enhance", "GET /api/v2/usage",
 ]);
 
+// Operations the API exposes but the SDK deliberately does NOT wrap: the device
+// consent endpoints are session-authenticated and driven by the diagrams.so web
+// consent page — an API-key SDK has no business calling them.
+const WEB_ONLY = new Set([
+  "GET /api/v2/oauth/device/info",
+  "POST /api/v2/oauth/device/approve",
+  "POST /api/v2/oauth/device/deny",
+]);
+
 test("SDK covers every API operation (drift guard)", { skip: !existsSync(SPEC) && "spec not alongside SDK" }, () => {
   const spec = JSON.parse(readFileSync(SPEC, "utf8"));
   const actual = new Set();
@@ -96,8 +116,8 @@ test("SDK covers every API operation (drift guard)", { skip: !existsSync(SPEC) &
       if (["get", "post", "patch", "delete", "put"].includes(m)) actual.add(`${m.toUpperCase()} ${p}`);
     }
   }
-  const missing = [...actual].filter((x) => !COVERED.has(x));
-  const removed = [...COVERED].filter((x) => !actual.has(x));
+  const missing = [...actual].filter((x) => !COVERED.has(x) && !WEB_ONLY.has(x));
+  const removed = [...COVERED, ...WEB_ONLY].filter((x) => !actual.has(x));
   assert.deepEqual(missing, [], `API added ops the SDK must implement: ${missing}`);
   assert.deepEqual(removed, [], `SDK lists ops the API removed: ${removed}`);
 });

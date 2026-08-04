@@ -13,8 +13,11 @@ def _resp(status, body, headers=None):
     return (status, headers or {}, text)
 
 
-def test_requires_api_key():
-    with pytest.raises(ValueError):
+def test_requires_api_key(monkeypatch, tmp_path):
+    # Isolate from the login() cache and env so "no credentials anywhere" is real.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("DIAGRAMS_API_KEY", raising=False)
+    with pytest.raises(ValueError, match="Not connected"):
         DiagramsClient(api_key="")
 
 
