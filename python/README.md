@@ -12,6 +12,18 @@ A thin, typed, **dependency-free** client for the [Diagrams.so](https://diagrams
 ```bash
 pip install diagrams-so
 ```
+
+Then connect. This puts a `diagrams-so` command on your PATH, so there is no key
+to copy and nothing to paste:
+
+```bash
+diagrams-so login      # a browser opens, press Approve
+diagrams-so whoami     # check which account this machine is connected as
+```
+
+In code, `DiagramsClient()` then needs no arguments. For CI, set
+`DIAGRAMS_API_KEY` instead; it always takes priority over a stored login.
+
 (Uses `requests` if present, otherwise the stdlib `urllib` — no hard dependency.)
 
 ## Quickstart
@@ -32,7 +44,7 @@ open("diagram.drawio", "w").write(client.export(d["id"], "drawio"))
 ```
 
 ## Authentication & billing
-Pass your key (from the **API Keys** page in your account). `dgz_live_` keys bill credits for `generate`/`edit`/`fix`/`relayout`/`fork`; `dgz_test_` keys are test mode — they bill the same credits (drawing your real balance, like a live key), at lower test rate limits. Reads and `enhance`/`clarify` are free. Check balance with `client.usage()`.
+Pass your key (from **Settings → AI Provider** in your account). `dgz_live_` keys bill credits for `generate`/`edit`/`fix`/`relayout`/`fork`; `dgz_test_` keys are test mode — they bill the same credits (drawing your real balance, like a live key), at lower test rate limits. Reads and `enhance`/`clarify` are free. Check balance with `client.usage()`.
 
 ## Errors
 Every non-2xx raises `DiagramsAPIError`:

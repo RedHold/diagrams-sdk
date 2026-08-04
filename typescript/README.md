@@ -12,6 +12,20 @@ A thin, typed, **zero-dependency** client for the [Diagrams.so](https://diagrams
 npm install @diagrams-so/sdk
 ```
 
+Then connect once, with no key to copy:
+
+```ts
+import { login, DiagramsClient } from "@diagrams-so/sdk";
+
+await login();                       // a browser opens, press Approve
+const client = new DiagramsClient(); // reads the stored credential
+```
+
+Prefer a terminal command? `npm i -g @diagrams-so/mcp` then `diagrams-so login`
+connects this machine for every Diagrams.so client, including this SDK. For CI,
+set `DIAGRAMS_API_KEY`.
+
+
 ## Quickstart
 ```ts
 import { DiagramsClient } from "@diagrams-so/sdk";
@@ -28,7 +42,7 @@ const drawio = await client.export(d.id, "drawio"); // native .drawio XML string
 ```
 
 ## Authentication & billing
-Pass your key (from the **API Keys** page). `dgz_live_` keys bill credits for `generate`/`edit`/`fix`/`relayout`/`fork`; `dgz_test_` keys are test mode — they bill the same credits (drawing your real balance, like a live key), at lower test rate limits. Reads and `enhancePrompt`/`clarifyPrompt` are free. Check balance with `client.usage()`.
+Pass your key (from **Settings → AI Provider**). `dgz_live_` keys bill credits for `generate`/`edit`/`fix`/`relayout`/`fork`; `dgz_test_` keys are test mode — they bill the same credits (drawing your real balance, like a live key), at lower test rate limits. Reads and `enhancePrompt`/`clarifyPrompt` are free. Check balance with `client.usage()`.
 
 ## Errors
 ```ts

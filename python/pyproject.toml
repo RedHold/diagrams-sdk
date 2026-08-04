@@ -14,6 +14,12 @@ authors = [{ name = "RedHold / Diagrams.so" }]
 keywords = ["diagram", "architecture", "aws", "azure", "gcp", "drawio", "ai"]
 dependencies = []  # stdlib-only; uses `requests` if present, else urllib
 
+[project.scripts]
+# Same command name the MCP package installs, deliberately: whichever ecosystem
+# you are in, `diagrams-so login` connects the machine and writes the one shared
+# credential file.
+diagrams-so = "diagrams_so.cli:main"
+
 [project.urls]
 Homepage = "https://diagrams.so"
 Documentation = "https://diagrams.so/developers"
