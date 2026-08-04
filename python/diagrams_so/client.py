@@ -16,12 +16,20 @@ DEFAULT_BASE = "https://api.diagrams.so/api/v2"
 class DiagramsAPIError(Exception):
     """Raised for any non-2xx API response. Carries the house error envelope."""
 
-    def __init__(self, code: str, message: str, status: int, request_id: Optional[str] = None):
+    def __init__(self, code: str, message: str, status: int, request_id: Optional[str] = None,
+                 upgrade_url: Optional[str] = None):
         super().__init__(f"[{code}] (HTTP {status}) {message}")
         self.code = code
         self.message = message
         self.status = status
         self.request_id = request_id
+        self._upgrade_url = upgrade_url
+
+    @property
+    def upgrade_url(self) -> Optional[str]:
+        """Where to add credits/upgrade — from the 402 QUOTA_EXCEEDED payload if
+        the API sent one, else ``None``."""
+        return self._upgrade_url
 
 
 # Errors where a billable call's outcome is UNKNOWN — the work may have completed
@@ -41,14 +49,24 @@ def is_ambiguous(err: Exception) -> bool:
 
 
 class DiagramsClient:
-    def __init__(self, api_key: str, base_url: str = DEFAULT_BASE, timeout: float = 450.0,
+    def __init__(self, api_key: Optional[str] = None, base_url: str = DEFAULT_BASE,
+                 timeout: float = 450.0,
                  max_retries: int = 3, backoff: float = 0.5,
                  retry_delays: "tuple[float, ...]" = (5.0, 15.0, 30.0),
                  retry_budget: float = 600.0):
-        if not api_key:
-            raise ValueError("api_key is required (dgz_live_… or dgz_test_…)")
-        self.api_key = api_key
         self.base_url = base_url.rstrip("/")
+        # Credential resolution: explicit arg > DIAGRAMS_API_KEY env > the login()
+        # cache (~/.diagrams-so/credentials.json, only if well-formed and minted
+        # for this base_url — any problem means "absent", never a crash).
+        if not api_key:
+            import os
+            api_key = os.environ.get("DIAGRAMS_API_KEY")
+        if not api_key:
+            from .auth import load_cached_api_key
+            api_key = load_cached_api_key(self.base_url)
+        if not api_key:
+            raise ValueError("Not connected — call diagrams_so.login() or set DIAGRAMS_API_KEY.")
+        self.api_key = api_key
         # 450s sits ABOVE the server-side timeout ladder (LLM worst-case ~160s <
         # gunicorn 300s < nginx 330s < ALB 360s) so the client never aborts work
         # the server would still deliver (and bill for).
@@ -98,7 +116,8 @@ class DiagramsClient:
         if status >= 400:
             err = (payload or {}).get("error") or {}
             raise DiagramsAPIError(err.get("code", "ERROR"), err.get("message", text or "request failed"),
-                                   status, err.get("request_id"))
+                                   status, err.get("request_id"),
+                                   upgrade_url=err.get("upgrade_url") or (payload or {}).get("upgrade_url"))
         return payload
 
     def _raise(self, status: int, text: str):
@@ -107,7 +126,7 @@ class DiagramsClient:
         except Exception:
             err = {}
         raise DiagramsAPIError(err.get("code", "ERROR"), err.get("message", text or "request failed"),
-                               status, err.get("request_id"))
+                               status, err.get("request_id"), upgrade_url=err.get("upgrade_url"))
 
     def _send_retrying(self, method, url, headers, data, retry_statuses=(429, 503)):
         """Send with bounded retries on the given transient statuses (pre-processing

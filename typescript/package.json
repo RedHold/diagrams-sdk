@@ -1,7 +1,7 @@
 {
   "name": "@diagrams-so/sdk",
-  "version": "1.1.0",
-  "description": "TypeScript SDK for the Diagrams.so public API \u2014 generate, edit, and manage cloud architecture diagrams with AI.",
+  "version": "1.2.0",
+  "description": "TypeScript SDK for the Diagrams.so public API — generate, edit, and manage cloud architecture diagrams with AI.",
   "type": "module",
   "main": "dist/index.js",
   "module": "dist/index.js",
@@ -40,6 +40,7 @@
     "node": ">=18"
   },
   "devDependencies": {
+    "@types/node": "^18.19.130",
     "typescript": "^5.4.0"
   },
   "repository": {

@@ -10,12 +10,19 @@
  * carrying the API's error code, HTTP status, and request_id. Reads are free;
  * generate/edit/fix/fork cost credits (drawing is always billed).
  *
- * Zero runtime dependencies — uses the platform `fetch` (Node ≥ 18, browsers, workers).
+ * Zero runtime dependencies — uses the platform `fetch`. Node ≥ 18 required for
+ * `login()` and the credential cache (they use node builtins: fs/os/path/child_process).
  */
+
+import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
+import { chmodSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { homedir, hostname } from "node:os";
+import { join } from "node:path";
 
 export const DEFAULT_BASE = "https://api.diagrams.so/api/v2";
 /** Bumped with the package; sent so the API attributes charges to source="sdk-ts". */
-export const SDK_VERSION = "1.1.0";
+export const SDK_VERSION = "1.2.0";
 
 export class DiagramsAPIError extends Error {
   constructor(
@@ -23,9 +30,20 @@ export class DiagramsAPIError extends Error {
     message: string,
     public status: number,
     public requestId?: string,
+    /** Where to add credits/upgrade — from the 402 QUOTA_EXCEEDED payload if the
+     * API sent one, else undefined. */
+    public upgradeUrl?: string,
   ) {
     super(`[${code}] (HTTP ${status}) ${message}`);
     this.name = "DiagramsAPIError";
+  }
+}
+
+/** Raised when the device-login flow cannot complete (denied, expired, …). */
+export class DiagramsAuthError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DiagramsAuthError";
   }
 }
 
@@ -92,7 +110,8 @@ export interface RelayoutStatus {
 }
 
 export interface DiagramsClientOptions {
-  apiKey: string; baseUrl?: string; timeoutMs?: number; maxRetries?: number; backoffMs?: number;
+  /** Optional: falls back to `DIAGRAMS_API_KEY`, then the `login()` cache. */
+  apiKey?: string; baseUrl?: string; timeoutMs?: number; maxRetries?: number; backoffMs?: number;
   /** Same-key retry delays (ms) for billable calls on ambiguous failures. */
   retryDelaysMs?: number[];
   /** Wall-clock ceiling (ms) for one billable call including its retries. */
@@ -114,10 +133,16 @@ export class DiagramsClient {
    * THIS process saw; `usageHistory` is the authoritative ledger. */
   public sessionCharges: SessionCharge[] = [];
 
-  constructor(opts: DiagramsClientOptions) {
-    if (!opts?.apiKey) throw new Error("apiKey is required (dgz_live_… or dgz_test_…)");
-    this.apiKey = opts.apiKey;
+  constructor(opts: DiagramsClientOptions = {}) {
     this.baseUrl = (opts.baseUrl ?? DEFAULT_BASE).replace(/\/+$/, "");
+    // Credential resolution: explicit option > DIAGRAMS_API_KEY env > the login()
+    // cache (~/.diagrams-so/credentials.json, only if well-formed and minted for
+    // this baseUrl — any problem means "absent", never a crash).
+    const apiKey = opts.apiKey
+      || (typeof process !== "undefined" ? process.env?.DIAGRAMS_API_KEY : undefined)
+      || loadCachedApiKey(this.baseUrl);
+    if (!apiKey) throw new Error("Not connected — call login() or set DIAGRAMS_API_KEY.");
+    this.apiKey = apiKey;
     // 450s sits ABOVE the server-side timeout ladder (LLM worst-case ~160s <
     // gunicorn 300s < nginx 330s < ALB 360s) so the client never aborts work the
     // server would still deliver (and bill for).
@@ -251,7 +276,8 @@ export class DiagramsClient {
     const payload = text ? JSON.parse(text) : {};
     if (!resp.ok) {
       const e = payload?.error ?? {};
-      throw new DiagramsAPIError(e.code ?? "ERROR", e.message ?? text ?? "request failed", resp.status, e.request_id);
+      throw new DiagramsAPIError(e.code ?? "ERROR", e.message ?? text ?? "request failed", resp.status, e.request_id,
+        e.upgrade_url ?? payload?.upgrade_url);
     }
     return payload as T;
   }
@@ -259,7 +285,7 @@ export class DiagramsClient {
   private throwErr(status: number, text: string): never {
     let e: any = {};
     try { e = (JSON.parse(text) || {}).error || {}; } catch { /* noop */ }
-    throw new DiagramsAPIError(e.code ?? "ERROR", e.message ?? text ?? "request failed", status, e.request_id);
+    throw new DiagramsAPIError(e.code ?? "ERROR", e.message ?? text ?? "request failed", status, e.request_id, e.upgrade_url);
   }
 
   // -- diagrams --
@@ -443,4 +469,207 @@ export class DiagramsClient {
   }
   me() { return this.request("GET", "/me"); }
   meta(kind: "diagram-types" | "providers" | "formats" | "features") { return this.request("GET", `/meta/${kind}`); }
+}
+
+// ---------------------------------------------------------------------------
+// Device-flow login (RFC 8628) + credential cache — node builtins only.
+// The cache file is SHARED with the Python SDK (identical JSON contract).
+// ---------------------------------------------------------------------------
+
+const GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code";
+const AUTH_CLIENT_ID = "sdk-ts";
+
+/** The on-disk credential cache written by `login()` (v1 contract, shared with
+ * the Python SDK — same file, same shape, byte-for-byte compatible). */
+export interface StoredCredentials {
+  version: 1;
+  api_key: string;
+  scope?: string | null;
+  livemode?: boolean | null;
+  auth_method: "device";
+  created_at: string;
+  expires_at?: string | null;
+  base_url: string;
+}
+
+export interface LoginOptions {
+  /** Mint a test-mode key (`livemode=false`). Test keys charge the same credits
+   * as live — not a free sandbox (lower rate limits only). */
+  test?: boolean;
+  /** API base (defaults to the production API). */
+  baseUrl?: string;
+  /** Open the verification URL automatically (best-effort). Default true. */
+  openBrowser?: boolean;
+}
+
+/** `~/.diagrams-so/credentials.json` — same file for every Diagrams.so SDK. */
+export function credentialsPath(): string {
+  return join(homedir(), ".diagrams-so", "credentials.json");
+}
+
+/** Return the cached API key if the cache is well-formed, `version === 1`, and
+ * was minted for `baseUrl`. ANY problem (missing, corrupt JSON, wrong version,
+ * base mismatch) returns undefined — the cache must never crash a client. */
+export function loadCachedApiKey(baseUrl: string): string | undefined {
+  try {
+    const creds = JSON.parse(readFileSync(credentialsPath(), "utf8"));
+    if (!creds || typeof creds !== "object" || creds.version !== 1) return undefined;
+    if (typeof creds.api_key !== "string" || !creds.api_key) return undefined;
+    if (typeof creds.base_url !== "string") return undefined;
+    if (creds.base_url.replace(/\/+$/, "") !== baseUrl.replace(/\/+$/, "")) return undefined;
+    return creds.api_key;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Delete the cached credentials. Idempotent — a missing cache is fine. */
+export function logout(): void {
+  try {
+    unlinkSync(credentialsPath());
+  } catch (e: any) {
+    if (e?.code !== "ENOENT") throw e;
+  }
+}
+
+/** Write the cache ATOMICALLY (tmp file + rename), dir 0700, file 0600. */
+function writeCredentials(creds: StoredCredentials): string {
+  const path = credentialsPath();
+  const dir = join(path, "..");
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  chmodSync(dir, 0o700);
+  const tmp = join(dir, `.credentials-${process.pid}-${randomBytes(6).toString("hex")}.tmp`);
+  try {
+    writeFileSync(tmp, JSON.stringify(creds, null, 2) + "\n", { mode: 0o600, flag: "wx" });
+    chmodSync(tmp, 0o600); // writeFileSync mode is masked by umask; be explicit
+    renameSync(tmp, path);
+  } catch (e) {
+    try { unlinkSync(tmp); } catch { /* noop */ }
+    throw e;
+  }
+  return path;
+}
+
+/** Only auto-open https URLs, or http to a loopback host (self-hosted/dev).
+ * javascript:/file:/leading-dash tricks are refused — the URL is still printed. */
+function isSafeToOpen(url: string): boolean {
+  try {
+    const u = new URL(url);
+    if (u.protocol === "https:") return true;
+    if (u.protocol === "http:") return ["localhost", "127.0.0.1", "[::1]", "::1"].includes(u.hostname);
+    return false;
+  } catch { return false; }
+}
+
+/** Best-effort "open this URL in the default browser". Never throws.
+ * Windows uses rundll32's FileProtocolHandler instead of `cmd /c start` —
+ * cmd re-parses its argument line, so URL metacharacters (&, ^, ") could
+ * inject commands (CVE-2024-27980 class); rundll32 takes plain argv. */
+function openUrl(url: string): void {
+  if (!isSafeToOpen(url)) return;
+  try {
+    const [cmd, args] =
+      process.platform === "darwin" ? ["open", [url]] :
+      process.platform === "win32" ? ["rundll32", ["url.dll,FileProtocolHandler", url]] :
+      ["xdg-open", [url]];
+    const child = spawn(cmd as string, args as string[], { stdio: "ignore", detached: true });
+    child.on("error", () => { /* headless / no opener — the printed URL still works */ });
+    child.unref();
+  } catch { /* noop */ }
+}
+
+/** Internal seam so tests can observe/skip the poll sleeps. Not public API. */
+export const _internal = {
+  sleep: (ms: number) => new Promise<void>((r) => setTimeout(r, ms)),
+};
+
+async function postJson(url: string, body: unknown): Promise<{ status: number; payload: any }> {
+  let resp: Response;
+  try {
+    resp = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch (e: any) {
+    throw new DiagramsAuthError(`Could not reach the Diagrams.so API at ${url}. (${e?.message ?? e})`);
+  }
+  const text = await resp.text();
+  let payload: any = {};
+  try { payload = text ? JSON.parse(text) : {}; } catch { /* non-JSON error body */ }
+  return { status: resp.status, payload };
+}
+
+/** Sign in via the OAuth device flow and return a ready `DiagramsClient`.
+ *
+ * Prints a one-time code and verification URL, opens the browser (best-effort),
+ * polls until you approve, then caches the minted API key at
+ * `~/.diagrams-so/credentials.json` so `new DiagramsClient()` works with no
+ * arguments from then on. */
+export async function login(opts: LoginOptions = {}): Promise<DiagramsClient> {
+  const base = (opts.baseUrl ?? DEFAULT_BASE).replace(/\/+$/, "");
+
+  if (opts.test) {
+    console.log("Test keys charge the same credits as live — not a free sandbox (lower rate limits only).");
+  }
+
+  const { status, payload: code } = await postJson(base + "/oauth/device/code", {
+    client_id: AUTH_CLIENT_ID,
+    livemode: !opts.test,
+    device_name: hostname(),
+  });
+  if (status !== 200 || !code?.device_code) {
+    throw new DiagramsAuthError(`Could not start device login (HTTP ${status}): ${JSON.stringify(code).slice(0, 200)}`);
+  }
+
+  const verificationUriComplete = code.verification_uri_complete ?? code.verification_uri;
+  console.log(`\nTo sign in, open: ${verificationUriComplete}`);
+  console.log(`Or go to ${code.verification_uri} and enter code: ${code.user_code}\n`);
+  if (opts.openBrowser !== false) openUrl(verificationUriComplete);
+
+  const deadline = Date.now() + Number(code.expires_in ?? 900) * 1000;
+  let intervalMs = Number(code.interval ?? 5) * 1000;
+  for (;;) {
+    if (Date.now() >= deadline) {
+      throw new DiagramsAuthError("Login expired before the device was approved — run login again.");
+    }
+    await _internal.sleep(intervalMs);
+    const { status: st, payload: poll } = await postJson(base + "/oauth/device/token", {
+      grant_type: GRANT_TYPE,
+      device_code: code.device_code,
+      client_id: AUTH_CLIENT_ID,
+    });
+    if (st === 200 && poll?.access_token) {
+      const now = new Date();
+      const expiresAt = poll.expires_in
+        ? new Date(now.getTime() + Number(poll.expires_in) * 1000).toISOString()
+        : null;
+      const path = writeCredentials({
+        version: 1,
+        api_key: poll.access_token,
+        scope: poll.scope ?? null,
+        livemode: poll.livemode ?? !opts.test,
+        auth_method: "device",
+        created_at: now.toISOString(),
+        expires_at: expiresAt,
+        base_url: base,
+      });
+      console.log(`Logged in. Credentials saved to ${path}`);
+      return new DiagramsClient({ apiKey: poll.access_token, baseUrl: base });
+    }
+    const err = poll?.error;
+    if (err === "authorization_pending") continue;
+    if (err === "slow_down") { intervalMs += 5_000; continue; } // RFC 8628 §3.5
+    if (err === "access_denied") {
+      throw new DiagramsAuthError("Login was denied in the browser — no key was created.");
+    }
+    if (err === "expired_token") {
+      throw new DiagramsAuthError("Login expired before the device was approved — run login again.");
+    }
+    if (err === "key_limit_reached") {
+      throw new DiagramsAuthError(
+        "You have 25 active keys. Revoke one at https://diagrams.so/api-keys, then re-run login.");
+    }
+    throw new DiagramsAuthError(`Device login failed (HTTP ${st}): ${err ?? JSON.stringify(poll).slice(0, 200)}`);
+  }
 }
