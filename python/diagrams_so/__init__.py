@@ -15,4 +15,4 @@ from .client import DiagramsAPIError, DiagramsClient, is_ambiguous
 
 __all__ = ["DiagramsClient", "DiagramsAPIError", "DiagramsAuthError",
            "is_ambiguous", "login", "logout"]
-__version__ = "1.2.0"
+__version__ = "1.3.0"

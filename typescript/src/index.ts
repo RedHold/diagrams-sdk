@@ -23,7 +23,7 @@ import { createInterface } from "node:readline";
 
 export const DEFAULT_BASE = "https://api.diagrams.so/api/v2";
 /** Bumped with the package; sent so the API attributes charges to source="sdk-ts". */
-export const SDK_VERSION = "1.2.0";
+export const SDK_VERSION = "1.3.0";
 
 export class DiagramsAPIError extends Error {
   constructor(
