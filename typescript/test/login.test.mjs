@@ -15,10 +15,12 @@ import {
   login, logout, credentialsPath, _internal,
 } from "../dist/index.js";
 
+const EMAIL = "me@corp.com";
+// New contract: the response carries NO user_code and NO code-bearing URL — the
+// one-time code is emailed, never in the link.
 const CODE_RESP = {
-  device_code: "dc_1", user_code: "ABCD-EFGH",
-  verification_uri: "https://diagrams.so/activate",
-  verification_uri_complete: "https://diagrams.so/activate?code=ABCD-EFGH",
+  device_code: "dc_1",
+  verification_uri: "https://diagrams.so/device",
   expires_in: 60, interval: 0,
 };
 const TOKEN_RESP = {
@@ -39,6 +41,7 @@ async function stubServer(tokenScript, codeResp = CODE_RESP) {
       log.push({ path: req.url, body });
       let status = 404, payload = { error: "not_found" };
       if (req.url.endsWith("/oauth/device/code")) { status = 200; payload = codeResp; }
+      else if (req.url.endsWith("/oauth/device/confirm")) { status = 200; payload = { revoked: 0 }; }
       else if (req.url.endsWith("/oauth/device/token")) {
         [status, payload] = tokenScript[Math.min(i, tokenScript.length - 1)];
         i += 1;
@@ -92,15 +95,19 @@ test("login happy path writes the shared cache and returns a ready client", asyn
     [400, { error: "authorization_pending" }], [200, TOKEN_RESP],
   ]);
   try {
-    const client = await login({ baseUrl: base, openBrowser: false });
+    const client = await login({ baseUrl: base, openBrowser: false, email: EMAIL });
     assert.ok(client instanceof DiagramsClient);
     // wire contract of the code request
     assert.ok(log[0].path.endsWith("/oauth/device/code"));
-    assert.deepEqual(log[0].body, { client_id: "sdk-ts", livemode: true, device_name: hostname() });
+    // the email travels with the code request (backend emails the one-time code)
+    assert.deepEqual(log[0].body, { client_id: "sdk-ts", livemode: true, device_name: hostname(), email: EMAIL });
     // token polls carry the RFC 8628 grant
     assert.equal(log[1].body.grant_type, "urn:ietf:params:oauth:grant-type:device_code");
     assert.equal(log[1].body.device_code, "dc_1");
     assert.equal(log[1].body.client_id, "sdk-ts");
+    // after writing the key, the client confirms so the server rotates safely
+    const confirm = log.find((e) => e.path.endsWith("/oauth/device/confirm"));
+    assert.ok(confirm, "login calls /oauth/device/confirm after saving the key");
     // cache: exact shape (shared contract with the Python SDK), 0600 in 0700 dir
     const path = credentialsPath();
     const creds = JSON.parse(readFileSync(path, "utf8"));
@@ -125,7 +132,7 @@ test("login honors interval and slow_down (+5s)", async () => {
     { ...CODE_RESP, interval: 1 },
   );
   try {
-    await login({ baseUrl: base, openBrowser: false });
+    await login({ baseUrl: base, openBrowser: false, email: EMAIL });
     // first poll at the server's interval; slow_down adds 5s to every later poll
     assert.deepEqual(sleeps, [1000, 6000, 6000]);
   } finally {
@@ -136,7 +143,7 @@ test("login honors interval and slow_down (+5s)", async () => {
 test("login denied throws", async () => {
   const { base, close } = await stubServer([[400, { error: "access_denied" }]]);
   try {
-    await assert.rejects(() => login({ baseUrl: base, openBrowser: false }),
+    await assert.rejects(() => login({ baseUrl: base, openBrowser: false, email: EMAIL }),
       (e) => e instanceof DiagramsAuthError && /denied/.test(e.message));
   } finally {
     await close();
@@ -146,7 +153,7 @@ test("login denied throws", async () => {
 test("login expired_token throws 'run login again'", async () => {
   const { base, close } = await stubServer([[400, { error: "expired_token" }]]);
   try {
-    await assert.rejects(() => login({ baseUrl: base, openBrowser: false }), /run login again/);
+    await assert.rejects(() => login({ baseUrl: base, openBrowser: false, email: EMAIL }), /run login again/);
   } finally {
     await close();
   }
@@ -156,7 +163,7 @@ test("login deadline timeout throws 'run login again'", async () => {
   const { base, close } = await stubServer(
     [[400, { error: "authorization_pending" }]], { ...CODE_RESP, expires_in: 0 });
   try {
-    await assert.rejects(() => login({ baseUrl: base, openBrowser: false }), /run login again/);
+    await assert.rejects(() => login({ baseUrl: base, openBrowser: false, email: EMAIL }), /run login again/);
   } finally {
     await close();
   }
@@ -165,7 +172,7 @@ test("login deadline timeout throws 'run login again'", async () => {
 test("login key_limit_reached carries the revoke instructions", async () => {
   const { base, close } = await stubServer([[400, { error: "key_limit_reached" }]]);
   try {
-    await assert.rejects(() => login({ baseUrl: base, openBrowser: false }),
+    await assert.rejects(() => login({ baseUrl: base, openBrowser: false, email: EMAIL }),
       /25 active keys.*diagrams\.so\/api-keys/);
   } finally {
     await close();
@@ -180,7 +187,7 @@ test("login test mode warns and requests livemode:false", async (t) => {
   const token = { ...TOKEN_RESP, access_token: "dgz_test_new", livemode: false };
   const { base, log, close } = await stubServer([[200, token]]);
   try {
-    await login({ test: true, baseUrl: base, openBrowser: false });
+    await login({ test: true, baseUrl: base, openBrowser: false, email: EMAIL });
     assert.ok(lines.some((l) => l.includes("Test keys charge the same credits as live")));
     assert.equal(log[0].body.livemode, false);
     assert.equal(JSON.parse(readFileSync(credentialsPath(), "utf8")).livemode, false);
@@ -192,7 +199,7 @@ test("login test mode warns and requests livemode:false", async (t) => {
 test("login persists expires_in as an ISO expires_at", async () => {
   const { base, close } = await stubServer([[200, { ...TOKEN_RESP, expires_in: 3600 }]]);
   try {
-    await login({ baseUrl: base, openBrowser: false });
+    await login({ baseUrl: base, openBrowser: false, email: EMAIL });
     const creds = JSON.parse(readFileSync(credentialsPath(), "utf8"));
     assert.ok(creds.expires_at && creds.expires_at > creds.created_at);
   } finally {
