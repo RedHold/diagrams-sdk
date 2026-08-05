@@ -18,10 +18,12 @@ import diagrams_so
 from diagrams_so import DiagramsAPIError, DiagramsAuthError, DiagramsClient
 from diagrams_so.auth import credentials_path
 
+EMAIL = "me@corp.com"
+# New contract: the response carries NO user_code and NO code-bearing URL — the
+# one-time code is emailed, never in the link.
 CODE_RESP = {
-    "device_code": "dc_1", "user_code": "ABCD-EFGH",
-    "verification_uri": "https://diagrams.so/activate",
-    "verification_uri_complete": "https://diagrams.so/activate?code=ABCD-EFGH",
+    "device_code": "dc_1",
+    "verification_uri": "https://diagrams.so/device",
     "expires_in": 60, "interval": 0,
 }
 TOKEN_RESP = {
@@ -44,6 +46,8 @@ def stub_server(token_script, code_resp=None):
             log.append((self.path, body))
             if self.path.endswith("/oauth/device/code"):
                 status, payload = 200, (code_resp or CODE_RESP)
+            elif self.path.endswith("/oauth/device/confirm"):
+                status, payload = 200, {"revoked": 0}
             elif self.path.endswith("/oauth/device/token"):
                 status, payload = token_script[min(state["i"], len(token_script) - 1)]
                 state["i"] += 1
@@ -74,6 +78,7 @@ def isolated_home(monkeypatch, tmp_path):
     """Every test gets a fresh HOME (own cache file) and no DIAGRAMS_API_KEY."""
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("DIAGRAMS_API_KEY", raising=False)
+    monkeypatch.setenv("DIAGRAMS_LOGIN_EMAIL", EMAIL)  # login needs an email; supply it non-interactively
     return tmp_path
 
 
@@ -103,19 +108,22 @@ def test_login_happy_path_writes_cache_and_returns_client(capsys):
     assert isinstance(client, DiagramsClient)
     assert client.api_key == "dgz_live_new"
     assert client.base_url == base
-    # printed the code + URL, opened the browser
+    # told the user we emailed the code, opened the PLAIN verification URL (no code in it)
     out = capsys.readouterr().out
-    assert "ABCD-EFGH" in out and CODE_RESP["verification_uri_complete"] in out
-    wb.assert_called_once_with(CODE_RESP["verification_uri_complete"])
-    # wire contract of the code request
+    assert EMAIL in out and "emailed" in out.lower()
+    assert "ABCD-EFGH" not in out  # the code is never printed — it goes by email
+    wb.assert_called_once_with(CODE_RESP["verification_uri"])
+    # wire contract of the code request — the email travels with it
     path, body = log[0]
     assert path.endswith("/oauth/device/code")
     assert body == {"client_id": "sdk-python", "livemode": True,
-                    "device_name": socket.gethostname()}
+                    "device_name": socket.gethostname(), "email": EMAIL}
     # token polls carry the RFC 8628 grant
     _, poll_body = log[1]
     assert poll_body["grant_type"] == "urn:ietf:params:oauth:grant-type:device_code"
     assert poll_body["device_code"] == "dc_1" and poll_body["client_id"] == "sdk-python"
+    # after writing the key, the client confirms so the server rotates safely
+    assert any(p.endswith("/oauth/device/confirm") for p, _ in log)
     # cache: exact shape, atomic write landed, 0600 file in 0700 dir
     path = credentials_path()
     creds = json.load(open(path))

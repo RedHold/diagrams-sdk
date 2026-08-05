@@ -19,6 +19,7 @@ import { randomBytes } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { join } from "node:path";
+import { createInterface } from "node:readline";
 
 export const DEFAULT_BASE = "https://api.diagrams.so/api/v2";
 /** Bumped with the package; sent so the API attributes charges to source="sdk-ts". */
@@ -500,6 +501,9 @@ export interface LoginOptions {
   baseUrl?: string;
   /** Open the verification URL automatically (best-effort). Default true. */
   openBrowser?: boolean;
+  /** Email to receive the one-time sign-in code. Defaults to
+   * `DIAGRAMS_LOGIN_EMAIL`, or an interactive prompt on a TTY. */
+  email?: string;
 }
 
 /** `~/.diagrams-so/credentials.json` — same file for every Diagrams.so SDK. */
@@ -583,12 +587,12 @@ export const _internal = {
   sleep: (ms: number) => new Promise<void>((r) => setTimeout(r, ms)),
 };
 
-async function postJson(url: string, body: unknown): Promise<{ status: number; payload: any }> {
+async function postJson(url: string, body: unknown, headers?: Record<string, string>): Promise<{ status: number; payload: any }> {
   let resp: Response;
   try {
     resp = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      headers: { "Content-Type": "application/json", Accept: "application/json", ...(headers ?? {}) },
       body: JSON.stringify(body),
     });
   } catch (e: any) {
@@ -600,12 +604,38 @@ async function postJson(url: string, body: unknown): Promise<{ status: number; p
   return { status: resp.status, payload };
 }
 
+/** Resolve the sign-in email: `DIAGRAMS_LOGIN_EMAIL` wins; otherwise prompt on a
+ * TTY. The one-time code is emailed here and the approver's account must match
+ * it, so it can't be left to the browser session alone. */
+async function promptLoginEmail(): Promise<string> {
+  const env = (process.env.DIAGRAMS_LOGIN_EMAIL ?? "").trim();
+  if (env) return env;
+  if (!process.stdin.isTTY) return "";
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    return (await new Promise<string>((r) => rl.question("Email to receive your sign-in code: ", r))).trim();
+  } finally {
+    rl.close();
+  }
+}
+
+/** Tell the server the new key is safely stored, so it revokes this machine's
+ * previous key only now — never leaving the account with no valid key.
+ * Best-effort: a failure here does not undo a successful login. */
+async function confirmDeviceKey(base: string, apiKey: string): Promise<void> {
+  try {
+    await postJson(base + "/oauth/device/confirm", {}, { Authorization: `Bearer ${apiKey}` });
+  } catch { /* best-effort */ }
+}
+
 /** Sign in via the OAuth device flow and return a ready `DiagramsClient`.
  *
- * Prints a one-time code and verification URL, opens the browser (best-effort),
- * polls until you approve, then caches the minted API key at
- * `~/.diagrams-so/credentials.json` so `new DiagramsClient()` works with no
- * arguments from then on. */
+ * You provide an email; the API emails you a one-time code. A browser opens the
+ * (plain) verification page where you sign in — new accounts sign up there — and
+ * enter the code, then approve. The code is emailed, never placed in the URL, so
+ * a stolen link can't be approved from someone else's browser. On approval the
+ * minted API key is cached at `~/.diagrams-so/credentials.json` so
+ * `new DiagramsClient()` works with no arguments from then on. */
 export async function login(opts: LoginOptions = {}): Promise<DiagramsClient> {
   const base = (opts.baseUrl ?? DEFAULT_BASE).replace(/\/+$/, "");
 
@@ -613,19 +643,26 @@ export async function login(opts: LoginOptions = {}): Promise<DiagramsClient> {
     console.log("Test keys charge the same credits as live — not a free sandbox (lower rate limits only).");
   }
 
+  const email = ((opts.email ?? "").trim()) || (await promptLoginEmail());
+  if (!email || !email.includes("@")) {
+    throw new DiagramsAuthError(
+      "A valid email is required to receive your sign-in code. Pass email or set DIAGRAMS_LOGIN_EMAIL.");
+  }
+
   const { status, payload: code } = await postJson(base + "/oauth/device/code", {
     client_id: AUTH_CLIENT_ID,
     livemode: !opts.test,
     device_name: hostname(),
+    email,
   });
   if (status !== 200 || !code?.device_code) {
     throw new DiagramsAuthError(`Could not start device login (HTTP ${status}): ${JSON.stringify(code).slice(0, 200)}`);
   }
 
-  const verificationUriComplete = code.verification_uri_complete ?? code.verification_uri;
-  console.log(`\nTo sign in, open: ${verificationUriComplete}`);
-  console.log(`Or go to ${code.verification_uri} and enter code: ${code.user_code}\n`);
-  if (opts.openBrowser !== false) openUrl(verificationUriComplete);
+  const verificationUri = code.verification_uri ?? "https://diagrams.so/device";
+  console.log(`\nWe emailed a sign-in code to ${email}.`);
+  console.log(`Open ${verificationUri}, sign in, and enter the code to approve.\n`);
+  if (opts.openBrowser !== false) openUrl(verificationUri);
 
   const deadline = Date.now() + Number(code.expires_in ?? 900) * 1000;
   let intervalMs = Number(code.interval ?? 5) * 1000;
@@ -654,6 +691,7 @@ export async function login(opts: LoginOptions = {}): Promise<DiagramsClient> {
         expires_at: expiresAt,
         base_url: base,
       });
+      await confirmDeviceKey(base, poll.access_token);
       console.log(`Logged in. Credentials saved to ${path}`);
       return new DiagramsClient({ apiKey: poll.access_token, baseUrl: base });
     }

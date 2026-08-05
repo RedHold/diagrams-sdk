@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import socket
 import tempfile
 import time
@@ -104,16 +105,20 @@ def _safe_to_open(url: str) -> bool:
     return False
 
 
-def _post(url: str, body: Dict[str, Any], timeout: float = 30.0) -> Tuple[int, Dict[str, Any]]:
+def _post(url: str, body: Dict[str, Any], timeout: float = 30.0,
+          headers: Optional[Dict[str, str]] = None) -> Tuple[int, Dict[str, Any]]:
     """POST JSON with stdlib urllib; return (status, parsed_payload). 4xx bodies
     are parsed, not raised — the device flow signals progress via 400s."""
     import urllib.error
     import urllib.request
     from . import __version__ as _v
+    hdrs = {"Content-Type": "application/json", "Accept": "application/json",
+            "User-Agent": f"diagrams-so-python/{_v}"}
+    if headers:
+        hdrs.update(headers)
     req = urllib.request.Request(
         url, data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json", "Accept": "application/json",
-                 "User-Agent": f"diagrams-so-python/{_v}"},
+        headers=hdrs,
         method="POST")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -129,45 +134,79 @@ def _post(url: str, body: Dict[str, Any], timeout: float = 30.0) -> Tuple[int, D
             f"Could not reach the Diagrams.so API at {url}. ({getattr(e, 'reason', e)})") from e
 
 
+def _prompt_email() -> str:
+    """Resolve the sign-in email: DIAGRAMS_LOGIN_EMAIL wins; otherwise prompt on a
+    TTY. The one-time code is emailed here and the approver's account must match
+    it, so it can't be left to the browser session alone."""
+    env = (os.environ.get("DIAGRAMS_LOGIN_EMAIL") or "").strip()
+    if env:
+        return env
+    if sys.stdin.isatty():
+        try:
+            return input("Email to receive your sign-in code: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return ""
+    return ""
+
+
+def _confirm(base: str, api_key: str) -> None:
+    """Tell the server the new key is safely stored, so it revokes this machine's
+    previous key only now — never leaving the account with no valid key.
+    Best-effort: a failure here does not undo a successful login."""
+    try:
+        _post(base + "/oauth/device/confirm", {}, headers={"Authorization": f"Bearer {api_key}"})
+    except Exception:
+        pass
+
+
 def login(test: bool = False, base_url: Optional[str] = None,
-          open_browser: bool = True) -> DiagramsClient:
+          open_browser: bool = True, email: Optional[str] = None) -> DiagramsClient:
     """Sign in via the OAuth device flow and return a ready :class:`DiagramsClient`.
 
-    Prints a one-time code and verification URL, opens the browser (best-effort),
-    polls until you approve, then caches the minted API key at
-    ``~/.diagrams-so/credentials.json`` so ``DiagramsClient()`` works with no
-    arguments from then on.
+    You provide an email; the API emails you a one-time code. A browser opens the
+    (plain) verification page where you sign in — new accounts sign up there — and
+    enter the code, then approve. The code is emailed, never placed in the URL, so
+    a stolen link can't be approved from someone else's browser. On approval the
+    minted API key is cached at ``~/.diagrams-so/credentials.json`` so
+    ``DiagramsClient()`` works with no arguments from then on.
 
     :param test: mint a test-mode key (``livemode=false``). Test keys charge the
         same credits as live — not a free sandbox (lower rate limits only).
     :param base_url: API base (defaults to the production API).
     :param open_browser: open the verification URL automatically.
+    :param email: the email to receive the one-time code (defaults to
+        ``DIAGRAMS_LOGIN_EMAIL`` or an interactive prompt).
     """
     base = (base_url or DEFAULT_BASE).rstrip("/")
 
     if test:
         print("Test keys charge the same credits as live — not a free sandbox (lower rate limits only).")
 
+    email = (email or "").strip() or _prompt_email()
+    if not email or "@" not in email:
+        raise DiagramsAuthError(
+            "A valid email is required to receive your sign-in code. "
+            "Pass email=... or set DIAGRAMS_LOGIN_EMAIL.")
+
     status, code_resp = _post(base + "/oauth/device/code", {
         "client_id": CLIENT_ID,
         "livemode": not test,
         "device_name": socket.gethostname(),
+        "email": email,
     })
     if status != 200 or "device_code" not in code_resp:
         raise DiagramsAuthError(
             f"Could not start device login (HTTP {status}): {json.dumps(code_resp)[:200]}")
 
-    user_code = code_resp["user_code"]
-    verification_uri = code_resp.get("verification_uri")
-    verification_uri_complete = code_resp.get("verification_uri_complete") or verification_uri
+    verification_uri = code_resp.get("verification_uri") or "https://diagrams.so/device"
     expires_in = float(code_resp.get("expires_in", 900))
     interval = float(code_resp.get("interval", 5))
 
-    print(f"\nTo sign in, open: {verification_uri_complete}")
-    print(f"Or go to {verification_uri} and enter code: {user_code}\n")
-    if open_browser and _safe_to_open(verification_uri_complete):
+    print(f"\nWe emailed a sign-in code to {email}.")
+    print(f"Open {verification_uri}, sign in, and enter the code to approve.\n")
+    if open_browser and _safe_to_open(verification_uri):
         try:
-            webbrowser.open(verification_uri_complete)
+            webbrowser.open(verification_uri)
         except Exception:
             pass  # headless / no browser — the printed URL still works
 
@@ -217,5 +256,6 @@ def login(test: bool = False, base_url: Optional[str] = None,
         "expires_at": expires_at,
         "base_url": base,
     })
+    _confirm(base, token["access_token"])
     print(f"Logged in. Credentials saved to {path}")
     return DiagramsClient(api_key=token["access_token"], base_url=base)
