@@ -4,6 +4,14 @@ Thanks for helping improve the Diagrams.so SDKs. This repo holds two thin client
 over the public API (`/api/v2`): the Python package `diagrams-so` and the TypeScript
 package `@diagrams-so/sdk`.
 
+## Licensing and conduct
+
+- This project is licensed under Apache-2.0. By submitting a contribution, you agree it is licensed under the repository's license (Apache License 2.0, Section 5: contributions are under the same terms unless you state otherwise). Only submit work you have the right to contribute.
+- Never include API keys, tokens, or customer data in code, examples, tests, or commit history. Use the offline stub in `local-test/` for zero-credit testing; remember that `dgz_test_` keys bill the account's real credit balance.
+- Calls the SDKs make to `api.diagrams.so` are governed by the [Terms of Service](https://diagrams.so/policy/terms) and [Acceptable Use Policy](https://diagrams.so/policy/acceptable-use); the code license grants no rights to the API itself.
+- Security issues go to security@diagrams.so per [SECURITY.md](./SECURITY.md), not the issue tracker.
+- Be respectful and constructive. See [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md).
+
 ## Repo layout
 ```
 python/        diagrams-so           (stdlib-only; ships py.typed)

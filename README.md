@@ -412,5 +412,11 @@ Per-language docs: [`python/README.md`](./python/README.md) · [`typescript/READ
 | `Address already in use` on the fake API | Another copy is running, or pick a new port: `PORT=8901 python local-test/stub_api.py` (and pass `BASE=http://127.0.0.1:8901/api/v2` to the test scripts). |
 | Prompt lost the `(.venv)` after opening a new terminal | Run `source .venv/bin/activate` again (Windows: `.venv\Scripts\activate`). |
 
-## License
-[Apache-2.0](./LICENSE) · docs at [diagrams.so/developers](https://diagrams.so/developers)
+## License and legal
+
+- **Code:** [Apache-2.0](./LICENSE). See [NOTICE](./NOTICE). Each package ships its license and notice files.
+- **Service:** the SDKs are clients for the Diagrams.so API. Use of the API is governed by the [Terms of Service](https://diagrams.so/policy/terms) and [Acceptable Use Policy](https://diagrams.so/policy/acceptable-use); the code license grants no rights to the API itself.
+- **Billing:** generate, edit, fix, re-layout, and fork operations cost credits; reads, exports, and helpers are free. Test-mode keys bill your real credit balance; there is no free sandbox. The offline stub in `local-test/` costs nothing.
+- **Trademarks:** Diagrams.so and the Diagrams.so logo are trademarks of RedHold LLC. This license does not grant permission to use them, except to accurately describe the package's origin. See the [Trademark Policy](https://diagrams.so/policy/trademark).
+- **Security:** report vulnerabilities to security@diagrams.so per [SECURITY.md](./SECURITY.md).
+- Docs: [diagrams.so/developers](https://diagrams.so/developers)
