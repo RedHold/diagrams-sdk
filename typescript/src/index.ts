@@ -23,7 +23,7 @@ import { createInterface } from "node:readline";
 
 export const DEFAULT_BASE = "https://api.diagrams.so/api/v2";
 /** Bumped with the package; sent so the API attributes charges to source="sdk-ts". */
-export const SDK_VERSION = "1.3.0";
+export const SDK_VERSION = "1.4.0";
 
 export class DiagramsAPIError extends Error {
   constructor(
@@ -290,10 +290,14 @@ export class DiagramsClient {
   }
 
   // -- diagrams --
+  /** Generate a diagram. `diagramType` is optional: left out, the field is not
+   * sent and the server picks the kind of diagram. A value (for example
+   * `"architecture"` or `"auto"`) is sent as given. Before 1.4.0 the SDK always
+   * sent `"architecture"`. */
   async generate(prompt: string, opts: { cloudProvider?: string; diagramType?: string; opinionated?: boolean; idempotencyKey?: string } = {}) {
     return this.track("generate", await this.requestBillable<Diagram>("POST", "/diagrams", {
       action: "generate",
-      body: { prompt, cloud_provider: opts.cloudProvider ?? "general", diagram_type: opts.diagramType ?? "architecture", opinionated: opts.opinionated ?? false },
+      body: { prompt, cloud_provider: opts.cloudProvider ?? "general", diagram_type: opts.diagramType, opinionated: opts.opinionated ?? false },
       idempotencyKey: opts.idempotencyKey,
     })) as Diagram;
   }
@@ -307,6 +311,8 @@ export class DiagramsClient {
    *       else if (event === "complete") console.log(data.id, data.usage?.credits_charged);
    *       else if (event === "error") throw new Error(data.error.message);
    *     }
+   *
+   * `diagramType` works as in `generate`: left out, the server picks.
    */
   async *generateStream(
     prompt: string,
@@ -322,7 +328,7 @@ export class DiagramsClient {
     };
     const body = JSON.stringify({
       prompt, cloud_provider: opts.cloudProvider ?? "general",
-      diagram_type: opts.diagramType ?? "architecture", opinionated: opts.opinionated ?? false,
+      diagram_type: opts.diagramType, opinionated: opts.opinionated ?? false,
     });
     const resp = await fetch(this.baseUrl + "/diagrams/stream", { method: "POST", headers, body });
     if (!resp.ok) this.throwErr(resp.status, await resp.text());
@@ -432,8 +438,10 @@ export class DiagramsClient {
   revert(id: string, opts: { versionId?: string; versionNumber?: number }) {
     return this.request("POST", `/diagrams/${id}/revert`, { body: { version_id: opts.versionId, version_number: opts.versionNumber } });
   }
+  /** Import draw.io XML. `diagramType` is sent only when given; left out, the
+   * server default applies (`"architecture"` today). */
   import(xml: string, opts: { title?: string; cloudProvider?: string; diagramType?: string } = {}) {
-    return this.request("POST", "/diagrams/import", { body: { xml, title: opts.title, cloud_provider: opts.cloudProvider ?? "general", diagram_type: opts.diagramType ?? "architecture" } });
+    return this.request("POST", "/diagrams/import", { body: { xml, title: opts.title, cloud_provider: opts.cloudProvider ?? "general", diagram_type: opts.diagramType } });
   }
 
   // -- gallery --

@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.4.0] - 2026-10
+`diagram_type` is now optional and left out of the request when not given, in
+both SDKs.
+
+- **`generate` / `generate_stream`** (Python) and **`generate` / `generateStream`**
+  (TS): `diagram_type` / `diagramType` defaults to `None` / `undefined` and the key
+  is not sent. The server then picks the kind of diagram. An explicit value,
+  including `"architecture"` and `"auto"`, is sent as given.
+- **`import_diagram`** / **`import`**: same rule. Left out, the server default
+  applies (`"architecture"` today).
+- **Behaviour is unchanged until the API turns automatic pick on.** While the
+  server setting `API_DEFAULT_DIAGRAM_TYPE_AUTO` is off (the default), a request
+  with no type still gets `"architecture"`, exactly as before. Once it is on, a
+  request with no type is treated as `"auto"`.
+- Up to 1.3.0 the SDKs always sent `"architecture"`. Pass it explicitly to keep
+  that type after the server setting changes.
+
 ## [1.2.0] — 2026-08
 Device-flow login (RFC 8628) — both SDKs, zero new runtime dependencies.
 

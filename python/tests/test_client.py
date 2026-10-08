@@ -71,3 +71,56 @@ def test_list_filters_none_query_params():
         c.list(limit=5)
     _, url, _, _ = m.call_args[0]
     assert "limit=5" in url and "cursor" not in url
+
+
+# -- diagram_type: left out unless given (server picks the type) --------------
+
+def _sent_body(c, call):
+    with mock.patch.object(c, "_send", return_value=_resp(200, {"id": "d1"})) as m:
+        call()
+    return json.loads(m.call_args[0][3])
+
+
+def test_generate_omits_diagram_type_when_not_given():
+    c = DiagramsClient(api_key="dgz_test_x")
+    sent = _sent_body(c, lambda: c.generate("hi"))
+    assert "diagram_type" not in sent
+    assert sent["cloud_provider"] == "general" and sent["opinionated"] is False
+
+
+@pytest.mark.parametrize("value", ["architecture", "auto"])
+def test_generate_sends_explicit_diagram_type(value):
+    c = DiagramsClient(api_key="dgz_test_x")
+    sent = _sent_body(c, lambda: c.generate("hi", diagram_type=value))
+    assert sent["diagram_type"] == value
+
+
+def test_import_omits_diagram_type_when_not_given():
+    c = DiagramsClient(api_key="dgz_test_x")
+    sent = _sent_body(c, lambda: c.import_diagram("<mxfile/>"))
+    assert "diagram_type" not in sent
+
+
+def test_import_sends_explicit_diagram_type():
+    c = DiagramsClient(api_key="dgz_test_x")
+    sent = _sent_body(c, lambda: c.import_diagram("<mxfile/>", diagram_type="architecture"))
+    assert sent["diagram_type"] == "architecture"
+
+
+@pytest.mark.parametrize("value,expected", [(None, None), ("architecture", "architecture"),
+                                            ("auto", "auto")])
+def test_generate_stream_diagram_type(value, expected):
+    c = DiagramsClient(api_key="dgz_test_x")
+    seen = {}
+
+    def fake_sse(url, headers, data):
+        seen["body"] = json.loads(data)
+        yield "complete", {"id": "d1", "usage": {"credits_charged": 1}}
+
+    with mock.patch.object(c, "_sse", side_effect=fake_sse):
+        kwargs = {} if value is None else {"diagram_type": value}
+        list(c.generate_stream("hi", **kwargs))
+    if expected is None:
+        assert "diagram_type" not in seen["body"]
+    else:
+        assert seen["body"]["diagram_type"] == expected

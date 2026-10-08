@@ -121,3 +121,54 @@ test("SDK covers every API operation (drift guard)", { skip: !existsSync(SPEC) &
   assert.deepEqual(missing, [], `API added ops the SDK must implement: ${missing}`);
   assert.deepEqual(removed, [], `SDK lists ops the API removed: ${removed}`);
 });
+
+// -- diagramType: left out unless given (server picks the type) --
+
+test("generate omits diagram_type when not given", async () => {
+  const calls = mockFetch([{ status: 200, body: { id: "d1" } }]);
+  const c = new DiagramsClient({ apiKey: "dgz_test_x" });
+  await c.generate("hi");
+  const sent = JSON.parse(calls[0].init.body);
+  assert.equal("diagram_type" in sent, false);
+  assert.equal(sent.cloud_provider, "general");
+});
+
+for (const value of ["architecture", "auto"]) {
+  test(`generate sends explicit diagramType "${value}"`, async () => {
+    const calls = mockFetch([{ status: 200, body: { id: "d1" } }]);
+    const c = new DiagramsClient({ apiKey: "dgz_test_x" });
+    await c.generate("hi", { diagramType: value });
+    assert.equal(JSON.parse(calls[0].init.body).diagram_type, value);
+  });
+}
+
+test("import omits diagram_type when not given, sends it when given", async () => {
+  const calls = mockFetch([{ status: 200, body: { id: "d1" } }]);
+  const c = new DiagramsClient({ apiKey: "dgz_test_x" });
+  await c.import("<mxfile/>");
+  await c.import("<mxfile/>", { diagramType: "architecture" });
+  assert.equal("diagram_type" in JSON.parse(calls[0].init.body), false);
+  assert.equal(JSON.parse(calls[1].init.body).diagram_type, "architecture");
+});
+
+for (const value of [undefined, "architecture", "auto"]) {
+  test(`generateStream diagramType ${value ?? "(not given)"}`, async () => {
+    const calls = [];
+    globalThis.fetch = async (url, init) => {
+      calls.push({ url, init });
+      const sse = 'event: complete\ndata: {"id":"d1","usage":{"credits_charged":1}}\n\n';
+      const bytes = new TextEncoder().encode(sse);
+      let done = false;
+      return {
+        ok: true, status: 200, headers: new Map(),
+        body: { getReader: () => ({ read: async () => (done ? { done: true } : ((done = true), { done: false, value: bytes })) }) },
+      };
+    };
+    const c = new DiagramsClient({ apiKey: "dgz_test_x" });
+    const opts = value === undefined ? {} : { diagramType: value };
+    for await (const _ of c.generateStream("hi", opts)) { /* drain */ }
+    const sent = JSON.parse(calls[0].init.body);
+    if (value === undefined) assert.equal("diagram_type" in sent, false);
+    else assert.equal(sent.diagram_type, value);
+  });
+}

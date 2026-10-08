@@ -41,6 +41,9 @@ if (w.length) await client.fix(d.id, w[0].message, { component: w[0].component ?
 const drawio = await client.export(d.id, "drawio"); // native .drawio XML string
 ```
 
+### Diagram type
+`diagramType` is optional. Leave it out and the SDK does not send it, so the server picks the kind of diagram for your prompt. Pass a value to choose: `diagramType: "architecture"` or `diagramType: "auto"` is sent as given. Up to 1.3.0 the SDK always sent `"architecture"`; to keep that exact behaviour, pass it explicitly. `client.meta("diagram-types")` lists the values the API accepts.
+
 ## Authentication & billing
 Pass your key (from **Settings → AI Provider**). `dgz_live_` keys bill credits for `generate`/`edit`/`fix`/`relayout`/`fork`; `dgz_test_` keys are test mode — they bill the same credits (drawing your real balance, like a live key), at lower test rate limits. Reads and `enhancePrompt`/`clarifyPrompt` are free. Check balance with `client.usage()`.
 

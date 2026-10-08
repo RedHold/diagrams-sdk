@@ -127,6 +127,8 @@ print("enhanced:", client.enhance_prompt("aws web app", cloud_provider="aws"))
 print("clarify:", client.clarify_prompt("a system with a database"))
 
 # ---- generate (BILLABLE, auto-idempotent) ----
+# diagram_type is optional: leave it out and the server picks the type.
+# "architecture" was the SDK default up to 1.3.0; pass it to keep that.
 try:
     d = client.generate("AWS 3-tier web app: ALB, EC2 auto-scaling, RDS Multi-AZ",
                          cloud_provider="aws", diagram_type="architecture")
@@ -234,6 +236,8 @@ console.log("enhanced:", await client.enhancePrompt("aws web app", { cloudProvid
 console.log("clarify:", await client.clarifyPrompt("a system with a database"));
 
 // ---- generate (BILLABLE, auto-idempotent) ----
+// diagramType is optional: leave it out and the server picks the type.
+// "architecture" was the SDK default up to 1.3.0; pass it to keep that.
 let d;
 try {
   d = await client.generate("AWS 3-tier web app: ALB, EC2 auto-scaling, RDS Multi-AZ",

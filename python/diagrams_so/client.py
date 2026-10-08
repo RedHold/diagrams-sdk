@@ -48,6 +48,17 @@ def is_ambiguous(err: Exception) -> bool:
     return err.status in _AMBIGUOUS_STATUSES or err.code in _AMBIGUOUS_CODES
 
 
+def _generate_body(prompt: str, cloud_provider: str, diagram_type: Optional[str],
+                   opinionated: bool) -> Dict[str, Any]:
+    """Request body for a generation. ``diagram_type`` is left out when not
+    given, so the server picks the type; an explicit value is sent as given."""
+    body: Dict[str, Any] = {"prompt": prompt, "cloud_provider": cloud_provider,
+                            "opinionated": opinionated}
+    if diagram_type is not None:
+        body["diagram_type"] = diagram_type
+    return body
+
+
 class DiagramsClient:
     def __init__(self, api_key: Optional[str] = None, base_url: str = DEFAULT_BASE,
                  timeout: float = 450.0,
@@ -249,16 +260,22 @@ class DiagramsClient:
 
     # -- diagrams ----------------------------------------------------------
     def generate(self, prompt: str, *, cloud_provider: str = "general",
-                 diagram_type: str = "architecture", opinionated: bool = False,
+                 diagram_type: Optional[str] = None, opinionated: bool = False,
                  idempotency_key: Optional[str] = None) -> Dict[str, Any]:
+        """Generate a diagram from ``prompt``.
+
+        ``diagram_type`` is optional. Leave it out and the field is not sent, so
+        the server picks the kind of diagram. Pass a value (for example
+        ``"architecture"`` or ``"auto"``) and it is sent as given. Before 1.4.0
+        the SDK always sent ``"architecture"``.
+        """
         return self._track("generate", self._request_billable(
             "POST", "/diagrams", action="generate",
-            body={"prompt": prompt, "cloud_provider": cloud_provider,
-                  "diagram_type": diagram_type, "opinionated": opinionated},
+            body=_generate_body(prompt, cloud_provider, diagram_type, opinionated),
             idempotency_key=idempotency_key))
 
     def generate_stream(self, prompt: str, *, cloud_provider: str = "general",
-                        diagram_type: str = "architecture", opinionated: bool = False,
+                        diagram_type: Optional[str] = None, opinionated: bool = False,
                         idempotency_key: Optional[str] = None):
         """Stream a generation as Server-Sent Events. Yields ``(event, data)``
         tuples where ``event`` is ``"progress"`` | ``"complete"`` | ``"error"`` and
@@ -273,9 +290,10 @@ class DiagramsClient:
                     print(data["id"], data["usage"]["credits_charged"])
                 elif event == "error":
                     raise RuntimeError(data["error"]["message"])
+
+        ``diagram_type`` works as in :meth:`generate`: left out, the server picks.
         """
-        body = {"prompt": prompt, "cloud_provider": cloud_provider,
-                "diagram_type": diagram_type, "opinionated": opinionated}
+        body = _generate_body(prompt, cloud_provider, diagram_type, opinionated)
         headers = {"Authorization": f"Bearer {self.api_key}", "Accept": "text/event-stream",
                    "Content-Type": "application/json",
                    "User-Agent": self._user_agent, "X-Diagrams-Client": self._client_id}
@@ -447,9 +465,13 @@ class DiagramsClient:
                              body={"version_id": version_id, "version_number": version_number})
 
     def import_diagram(self, xml: str, *, title: Optional[str] = None,
-                       cloud_provider: str = "general", diagram_type: str = "architecture") -> Dict[str, Any]:
-        return self._request("POST", "/diagrams/import", body={
-            "xml": xml, "title": title, "cloud_provider": cloud_provider, "diagram_type": diagram_type})
+                       cloud_provider: str = "general", diagram_type: Optional[str] = None) -> Dict[str, Any]:
+        """Import draw.io XML. ``diagram_type`` is sent only when given; left out,
+        the server default applies (``"architecture"`` today)."""
+        body: Dict[str, Any] = {"xml": xml, "title": title, "cloud_provider": cloud_provider}
+        if diagram_type is not None:
+            body["diagram_type"] = diagram_type
+        return self._request("POST", "/diagrams/import", body=body)
 
     # -- gallery -----------------------------------------------------------
     def search_gallery(self, *, q: Optional[str] = None, cloud_provider: Optional[str] = None,
