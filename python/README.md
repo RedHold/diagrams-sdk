@@ -5,8 +5,8 @@ A thin, typed, **dependency-free** client for the [Diagrams.so](https://diagrams
 - Covers **all 27** `/api/v2` operations · one method per endpoint
 - **No hard dependencies** — uses `requests` if installed, else stdlib `urllib`
 - Typed, ships `py.typed` · raises a single `DiagramsAPIError` with `code` / `status` / `request_id`
-- **Safe billing:** every billable call auto-attaches an `Idempotency-Key` and retries *ambiguous* failures (timeout / 5xx / in-progress) with the **same key**, so a response lost to a gateway timeout is replayed — one charge, never two
-- Built-in `429`/`503` backoff (honors `Retry-After`), **SSE streaming**, async **re-layout** helper, and an in-process credit tally (`session_charges`)
+- **Safe retries:** every AI call auto-attaches an `Idempotency-Key` and retries *ambiguous* failures (timeout / 5xx / in-progress) with the **same key**, so a response lost to a gateway timeout is replayed — one diagram, never two
+- Built-in `429`/`503` backoff (honors `Retry-After`), **SSE streaming**, async **re-layout** helper, and an in-process cost tally (`session_charges`)
 
 ## Install
 ```bash
@@ -30,7 +30,7 @@ In code, `DiagramsClient()` then needs no arguments. For CI, set
 ```python
 from diagrams_so import DiagramsClient
 
-client = DiagramsClient(api_key="dgz_live_…")   # or dgz_test_… (test mode — bills the same credits)
+client = DiagramsClient(api_key="dgz_live_…")   # or dgz_test_… (test mode — same real account, lower rate limit)
 
 d = client.generate("AWS 3-tier web app: ALB, EC2, RDS", cloud_provider="aws")
 print(d["id"], d["score"]["score"], len(d["warnings"]))
@@ -43,8 +43,8 @@ if w:
 open("diagram.drawio", "w").write(client.export(d["id"], "drawio"))
 ```
 
-## Authentication & billing
-Pass your key (from **Settings → AI Provider** in your account). `dgz_live_` keys bill credits for `generate`/`edit`/`fix`/`relayout`/`fork`; `dgz_test_` keys are test mode — they bill the same credits (drawing your real balance, like a live key), at lower test rate limits. Reads and `enhance`/`clarify` are free. Check balance with `client.usage()`.
+## Authentication & plans
+Pass your key (from **Settings → AI Provider** in your account). **Nothing you call is metered:** generation is unlimited on both plans — Free ($0) and Paid ($20/month, or $100/year) — and the per-minute rate limit is the only ceiling. The Paid plan adds exactly two things: exports without a watermark, and `.drawio` export. `dgz_test_` keys are test mode, not a sandbox — they act on the same real account (real diagrams created, edited, deleted; real AI calls) at a lower rate limit (20 requests/minute instead of 60). `client.usage()` reports your plan and what each action costs us to run.
 
 ## Errors
 Every non-2xx raises `DiagramsAPIError`:
@@ -53,24 +53,24 @@ from diagrams_so import DiagramsAPIError
 try:
     client.generate("…")
 except DiagramsAPIError as e:
-    print(e.code, e.status, e.request_id)   # e.g. QUOTA_EXCEEDED 402 req_abc
-    if e.status == 402:
-        ...  # out of credits → send the user to upgrade
+    print(e.code, e.status, e.request_id)   # e.g. VALIDATION_ERROR 422 req_abc
+    if e.status == 403 and e.code == "UPGRADE_REQUIRED":
+        ...  # a Paid-plan feature (e.g. `.drawio` export) → send the user to upgrade
 ```
 
-## Idempotency (safe retries on billable ops)
-Every billable call (`generate`, `edit`, `fix`, `relayout`) **auto-attaches a fresh
-`Idempotency-Key`** and retries ambiguous failures with that same key, so you never
-double-charge on a timeout. Pass your own key to make the safety window explicit or
-to dedupe across processes:
+## Idempotency (safe retries on AI calls)
+Every AI call (`generate`, `edit`, `fix`, `relayout`) **auto-attaches a fresh
+`Idempotency-Key`** and retries ambiguous failures with that same key, so a timeout
+never turns one call into two diagrams. Pass your own key to make the safety window
+explicit or to dedupe across processes:
 ```python
 client.generate("…", idempotency_key="order-42")   # server replays the stored result for 24h
 ```
-Definite rejections (`401`/`402`/`404`/`422`) are never retried; a call whose outcome
+Definite rejections (`401`/`403`/`404`/`422`) are never retried; a call whose outcome
 is lost is recorded in `session_charges` as `status="unknown"` — reconcile with
-`client.usage_history()`. Streamed generations tally a `confirmed` charge on their
-terminal event; an applied re-layout tallies `unknown` (its credits bill
-asynchronously — the exact amount is in `usage_history`).
+`client.usage_history()`. Streamed generations tally a `confirmed` cost on their
+terminal event; an applied re-layout tallies `unknown` (its cost is recorded
+asynchronously — the exact figure is in `usage_history`).
 
 ## Streaming
 ```python
@@ -82,12 +82,11 @@ for event, data in client.generate_stream("AWS event-driven pipeline"):
     elif event == "error":
         raise RuntimeError(data["error"]["message"])
 ```
-The diagram XML arrives only in the terminal `complete` event (after the charge).
+The diagram XML arrives only in the terminal `complete` event, once generation finishes.
 
 ## Async re-layout
-Re-layout is token-billed on **every** run (no free allowance) and charged only on
-delivery of the re-laid diagram. The first call returns `confirmation_required`;
-re-call with `confirm=True` to accept the charge:
+Re-layout runs the model on **every** call, so it always asks first. The first call
+returns `confirmation_required`; re-call with `confirm=True` to go ahead:
 ```python
 job = client.relayout_and_wait(d["id"])           # starts + polls to completion
 if job.get("status") == "confirmation_required":  # re-layout always needs confirmation
@@ -115,7 +114,7 @@ DiagramsClient(api_key, base_url="https://api.diagrams.so/api/v2",
 ```
 `timeout` defaults to **450s**, above the server-side timeout ladder, so the client
 never aborts work the server would still deliver. Reads retry `429`/`503` (honoring
-`Retry-After`). Billable calls retry `429` the same way and every *ambiguous* failure
+`Retry-After`). AI calls retry `429` the same way and every *ambiguous* failure
 (timeout / `502`/`503`/`504` / in-progress) through the same-key idempotent ladder
 (`retry_delays` between attempts, capped at `retry_budget` seconds) — a **single** retry
 layer, so a busy server is never poked twice. Point `base_url` at

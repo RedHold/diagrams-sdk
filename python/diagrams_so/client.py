@@ -27,8 +27,8 @@ class DiagramsAPIError(Exception):
 
     @property
     def upgrade_url(self) -> Optional[str]:
-        """Where to add credits/upgrade — from the 402 QUOTA_EXCEEDED payload if
-        the API sent one, else ``None``."""
+        """Where to upgrade — from an error payload that carries one (e.g. a
+        Paid-plan feature), else ``None``."""
         return self._upgrade_url
 
 
@@ -41,7 +41,7 @@ _AMBIGUOUS_CODES = {"TIMEOUT", "CONNECTION_ERROR", "IDEMPOTENCY_IN_PROGRESS"}
 
 
 def is_ambiguous(err: Exception) -> bool:
-    """True if ``err`` leaves a billable call's outcome unknown (safe to retry with
+    """True if ``err`` leaves an AI call's outcome unknown (safe to retry with
     the same Idempotency-Key)."""
     if not isinstance(err, DiagramsAPIError):
         return False
@@ -188,9 +188,10 @@ class DiagramsClient:
 
     # -- session charge tally ---------------------------------------------
     def _track(self, action: str, result: Dict[str, Any]) -> Dict[str, Any]:
-        """Record what a billable task charged, so ``session_charges`` can answer
-        'how much did each task cost?' without a server round-trip. This counts only
-        what THIS process saw; the server ledger (:meth:`usage_history`) is
+        """Record what an AI task cost to run, so ``session_charges`` can answer
+        'how much did each task cost?' without a server round-trip. These are internal
+        cost figures, not a bill — generation is unlimited on every plan. This counts
+        only what THIS process saw; the server ledger (:meth:`usage_history`) is
         authoritative, and ambiguous outcomes go through :meth:`_track_unknown`."""
         try:
             usage = (result or {}).get("usage") or {}
@@ -207,21 +208,21 @@ class DiagramsClient:
         return result
 
     def _track_unknown(self, action: str, note: Optional[str] = None) -> None:
-        """Record a billable call whose outcome this process never saw: the server
-        may or may not have charged — only :meth:`usage_history` knows for sure."""
+        """Record an AI call whose outcome this process never saw: the work may or
+        may not have run — only :meth:`usage_history` knows for sure."""
         self.session_charges.append({"action": action, "status": "unknown", "note": note})
 
     # -- billable calls: idempotency + bounded same-key retry --------------
     def _request_billable(self, method: str, path: str, *, action: str,
                           body: Optional[dict] = None, params: Optional[dict] = None,
                           idempotency_key: Optional[str] = None) -> Dict[str, Any]:
-        """Send a billable call with a fresh Idempotency-Key and bounded same-key
+        """Send an AI call with a fresh Idempotency-Key and bounded same-key
         retries on AMBIGUOUS failures (timeout / 5xx / in-progress). A response lost
-        to a gateway timeout is REPLAYED by the server on retry — one charge, result
-        recovered; retrying WITHOUT a key would create a second diagram and a second
-        charge. Definite rejections (401/402/404/422 …) never retry. On final
-        ambiguous failure the outcome is tallied as ``status:"unknown"`` and the
-        error re-raised — reconcile against :meth:`usage_history`."""
+        to a gateway timeout is REPLAYED by the server on retry — one diagram, result
+        recovered; retrying WITHOUT a key would create a second diagram. Definite
+        rejections (401/403/404/422 …) never retry. On final ambiguous failure the
+        outcome is tallied as ``status:"unknown"`` and the error re-raised —
+        reconcile against :meth:`usage_history`."""
         import time
         import uuid
         key = idempotency_key or str(uuid.uuid4())
@@ -244,7 +245,7 @@ class DiagramsClient:
                 time.sleep(delay)
         if is_ambiguous(last_err):
             code = getattr(last_err, "code", "ERROR")
-            self._track_unknown(action, note=f"{code} after retries — may have been charged")
+            self._track_unknown(action, note=f"{code} after retries — the diagram may still exist")
         raise last_err  # type: ignore[misc]
 
     # -- diagrams ----------------------------------------------------------
@@ -263,8 +264,8 @@ class DiagramsClient:
         """Stream a generation as Server-Sent Events. Yields ``(event, data)``
         tuples where ``event`` is ``"progress"`` | ``"complete"`` | ``"error"`` and
         ``data`` is the parsed JSON. Progress events carry only ``{stage, progress,
-        message}`` — the diagram XML arrives ONLY in the terminal ``complete`` event
-        (after the charge). Example::
+        message}`` — the diagram XML arrives ONLY in the terminal ``complete`` event,
+        once generation finishes. Example::
 
             for event, data in client.generate_stream("AWS 3-tier app"):
                 if event == "progress":
@@ -369,11 +370,11 @@ class DiagramsClient:
     def relayout(self, diagram_id: str, *, confirm: bool = False,
                  idempotency_key: Optional[str] = None) -> Dict[str, Any]:
         """Start an async AI re-layout. Returns a job dict with ``job_id`` and
-        ``status``. Re-layout is token-billed on **every** run (no free allowance):
-        the API returns ``{"status": "confirmation_required"}`` until you re-call
-        with ``confirm=True`` to accept the charge, which is applied only on delivery
-        of the re-laid diagram (crash = no charge). Poll with :meth:`relayout_status`,
-        or use :meth:`relayout_and_wait`."""
+        ``status``. Re-layout runs the model on **every** call, so it always asks
+        first: the API returns ``{"status": "confirmation_required"}`` until you
+        re-call with ``confirm=True``. The new layout is applied only on delivery
+        (crash = no change). Poll with :meth:`relayout_status`, or use
+        :meth:`relayout_and_wait`."""
         return self._request_billable(
             "POST", f"/diagrams/{diagram_id}/relayout", action="relayout",
             params={"confirm": "true" if confirm else None},
@@ -390,7 +391,7 @@ class DiagramsClient:
         """Convenience: start a re-layout and block until it reaches a terminal
         state (``done``/``failed``) or ``timeout`` seconds elapse. Returns the
         final status dict. If the API asks for confirmation, that dict is returned
-        as-is (re-call with ``confirm=True``). If the poll budget expires the charge
+        as-is (re-call with ``confirm=True``). If the poll budget expires the job
         may still land on delivery, so it is recorded as ``status:"unknown"`` in
         ``session_charges`` before a TIMEOUT is raised — reconcile via
         :meth:`usage_history`."""
@@ -411,13 +412,13 @@ class DiagramsClient:
                         # poll response, so the exact credits are unknown to this
                         # process — the ledger (usage_history) has them. Mirrors MCP.
                         self._track_unknown("relayout",
-                                            note="chargeable re-layout applied; exact credits are in usage_history")
+                                            note="re-layout applied; its exact cost figure is in usage_history")
                         recorded = True
                     return st
                 if time.monotonic() >= deadline:
                     if chargeable:
                         self._track_unknown("relayout",
-                                            note="chargeable re-layout still running when the wait elapsed; check usage_history")
+                                            note="re-layout still running when the wait elapsed; check usage_history")
                         recorded = True
                     raise DiagramsAPIError("TIMEOUT", "re-layout did not finish in time", 0)
                 time.sleep(poll_interval)
@@ -426,7 +427,7 @@ class DiagramsClient:
             # and bill server-side. Record it once (unless already recorded above).
             if chargeable and not recorded:
                 self._track_unknown("relayout",
-                                    note="re-layout polling failed; the job may still complete and charge — check usage_history")
+                                    note="re-layout polling failed; the job may still complete — check usage_history")
             raise
 
     def export(self, diagram_id: str, fmt: str = "drawio") -> str:

@@ -3,8 +3,8 @@
     DIAGRAMS_KEY=dgz_test_… DIAGRAMS_BASE=http://localhost:8000/api/v2 \
         python3 sdk/examples/try_local.py
 
-No install needed — the SDK is stdlib-only. Reads/enhance/clarify are free;
-generate/edit/relayout cost credits (a Pro test key has plenty)."""
+No install needed — the SDK is stdlib-only. Generation is unlimited on every plan,
+so nothing here is metered; generate/edit/relayout just take longer than reads."""
 import os
 import sys
 
@@ -18,12 +18,12 @@ if not KEY:
 
 c = DiagramsClient(api_key=KEY, base_url=BASE)
 
-print("1) who am I / free reads")
+print("1) who am I / reads")
 print("   me:", c.me())
 print("   providers:", c.meta("providers"))
 print("   usage:", c.usage())
 
-print("\n2) free prompt helpers")
+print("\n2) prompt helpers")
 print("   enhance:", c.enhance_prompt("aws web app")["enhanced_prompt"][:60], "…")
 
 print("\n3) error handling (bad key → typed error)")
@@ -32,7 +32,7 @@ try:
 except DiagramsAPIError as e:
     print(f"   raised DiagramsAPIError: {e.code} {e.status}")
 
-print("\n4) generate (real LLM — costs a credit)")
+print("\n4) generate (real LLM — takes a few seconds)")
 d = c.generate("AWS 3-tier web app: ALB, 2x EC2, RDS", cloud_provider="aws")
 did = d["id"]
 print(f"   id={did}  score={d['score']['score']}  warnings={len(d['warnings'])}")

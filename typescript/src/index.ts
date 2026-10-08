@@ -7,8 +7,9 @@
  *   console.log(d.id, d.score?.score);
  *
  * Every method maps 1:1 to an endpoint. Non-2xx responses throw `DiagramsAPIError`
- * carrying the API's error code, HTTP status, and request_id. Reads are free;
- * generate/edit/fix/fork cost credits (drawing is always billed).
+ * carrying the API's error code, HTTP status, and request_id. Generation is
+ * unlimited on every plan — nothing is metered; generate/edit/fix/fork run an AI
+ * model, so they take seconds rather than milliseconds.
  *
  * Zero runtime dependencies — uses the platform `fetch`. Node ≥ 18 required for
  * `login()` and the credential cache (they use node builtins: fs/os/path/child_process).
@@ -31,7 +32,7 @@ export class DiagramsAPIError extends Error {
     message: string,
     public status: number,
     public requestId?: string,
-    /** Where to add credits/upgrade — from the 402 QUOTA_EXCEEDED payload if the
+    /** Where to upgrade — from an error payload that carries one (e.g. a Paid-plan feature), if the
      * API sent one, else undefined. */
     public upgradeUrl?: string,
   ) {
@@ -55,7 +56,7 @@ export class DiagramsAuthError extends Error {
 const AMBIGUOUS_STATUSES = new Set([502, 503, 504, 409]);
 const AMBIGUOUS_CODES = new Set(["TIMEOUT", "CONNECTION_ERROR", "IDEMPOTENCY_IN_PROGRESS"]);
 
-/** True if `err` leaves a billable call's outcome unknown (safe to retry with the
+/** True if `err` leaves an AI call's outcome unknown (safe to retry with the
  * same Idempotency-Key). */
 export function isAmbiguous(err: unknown): boolean {
   if (!(err instanceof DiagramsAPIError)) return false;
@@ -85,9 +86,10 @@ export interface UsageHistoryItem {
 }
 export interface UsageHistorySummary { total_credits_charged: number; task_count: number; }
 export interface UsageHistoryList { items: UsageHistoryItem[]; next_cursor?: string | null; has_more: boolean; summary: UsageHistorySummary; }
-/** One entry in the in-process tally of what each billable task charged. `status`
- * is `"unknown"` when the outcome was lost to an ambiguous failure (the server may
- * or may not have charged — only `usageHistory` is authoritative). */
+/** One entry in the in-process tally of what each AI task cost to run — internal
+ * cost figures, not a bill (generation is unlimited on every plan). `status` is
+ * `"unknown"` when the outcome was lost to an ambiguous failure (the work may or
+ * may not have run — only `usageHistory` is authoritative). */
 export interface SessionCharge {
   action: string;
   status: "confirmed" | "unknown";
@@ -129,7 +131,7 @@ export class DiagramsClient {
   private retryBudgetMs: number;
   private clientId = `sdk-ts/${SDK_VERSION}`;
   private userAgent = `@diagrams-so/sdk/${SDK_VERSION}`;
-  /** Running tally of what each billable task charged this session — answers
+  /** Running tally of what each AI task cost to run this session — answers
    * "how much did each task cost?" with no server round-trip. Counts only what
    * THIS process saw; `usageHistory` is the authoritative ledger. */
   public sessionCharges: SessionCharge[] = [];
@@ -154,7 +156,7 @@ export class DiagramsClient {
     this.retryBudgetMs = opts.retryBudgetMs ?? 600_000;
   }
 
-  /** Record what a billable task charged (from the response `usage` block). */
+  /** Record what an AI task cost to run (from the response `usage` block). */
   private track(action: string, result: any): any {
     const u = result?.usage;
     if (u) this.sessionCharges.push({
@@ -164,8 +166,8 @@ export class DiagramsClient {
     return result;
   }
 
-  /** Record a billable call whose outcome this process never saw — the server may
-   * or may not have charged; only `usageHistory` knows for sure. */
+  /** Record an AI call whose outcome this process never saw — the work may or may
+   * not have run; only `usageHistory` knows for sure. */
   private recordUnknown(action: string, note?: string): void {
     this.sessionCharges.push({ action, status: "unknown", note });
   }
@@ -176,11 +178,11 @@ export class DiagramsClient {
     return `idem-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
   }
 
-  /** Send a billable call with a fresh Idempotency-Key and bounded same-key retries
+  /** Send an AI call with a fresh Idempotency-Key and bounded same-key retries
    * on AMBIGUOUS failures (timeout / 5xx / in-progress). A response lost to a
-   * gateway timeout is REPLAYED by the server on retry — one charge, result
-   * recovered; retrying WITHOUT a key would create a second diagram and a second
-   * charge. Definite rejections (401/402/404/422 …) never retry. On final ambiguous
+   * gateway timeout is REPLAYED by the server on retry — one diagram, result
+   * recovered; retrying WITHOUT a key would create a second diagram. Definite
+   * rejections (401/403/404/422 …) never retry. On final ambiguous
    * failure the outcome is tallied as `status:"unknown"` and re-thrown — reconcile
    * against `usageHistory`. */
   private async requestBillable<T = any>(
@@ -205,7 +207,7 @@ export class DiagramsClient {
       }
     }
     if (isAmbiguous(lastErr)) {
-      this.recordUnknown(opts.action, `${(lastErr as DiagramsAPIError).code} after retries — may have been charged`);
+      this.recordUnknown(opts.action, `${(lastErr as DiagramsAPIError).code} after retries — the diagram may still exist`);
     }
     throw lastErr;
   }
@@ -300,7 +302,7 @@ export class DiagramsClient {
   /** Stream a generation as Server-Sent Events. Yields `{event, data}` where
    * `event` is `"progress" | "complete" | "error"`. Progress events carry only
    * `{stage, progress, message}` — the diagram XML arrives ONLY in the terminal
-   * `complete` event (after the charge). Example:
+   * `complete` event, once generation finishes. Example:
    *
    *     for await (const { event, data } of client.generateStream("AWS 3-tier app")) {
    *       if (event === "progress") console.log(data.progress, data.message);
@@ -374,11 +376,10 @@ export class DiagramsClient {
   warnings(id: string) { return this.request<Warning[]>("GET", `/diagrams/${id}/warnings`); }
 
   // -- async AI re-layout (202 + job_id; poll to completion) --
-  /** Start an async AI re-layout. Re-layout is token-billed on **every** run (no
-   * free allowance): the API returns `{status:"confirmation_required"}` until you
-   * re-call with `{confirm:true}` to accept the charge, which is applied only on
-   * delivery of the re-laid diagram (crash = no charge). Idempotent + same-key
-   * retried like other billable calls. */
+  /** Start an async AI re-layout. Re-layout runs the model on **every** call, so it
+   * always asks first: the API returns `{status:"confirmation_required"}` until you
+   * re-call with `{confirm:true}`. The new layout is applied only on delivery
+   * (crash = no change). Idempotent + same-key retried like other AI calls. */
   startRelayout(id: string, opts: { confirm?: boolean; idempotencyKey?: string } = {}) {
     return this.requestBillable<RelayoutJob>("POST", `/diagrams/${id}/relayout`, {
       action: "relayout", query: { confirm: opts.confirm || undefined }, idempotencyKey: opts.idempotencyKey,
@@ -392,7 +393,7 @@ export class DiagramsClient {
   /** Convenience: start a re-layout and poll until it reaches a terminal state
    * (`done`/`failed`) or `timeoutMs` elapses. If the API asks for confirmation,
    * that response is returned as-is (re-call with `{confirm:true}`). If the poll
-   * budget expires the charge may still land on delivery, so it is recorded as
+   * budget expires the job may still land on delivery, so it is recorded as
    * `status:"unknown"` in `sessionCharges` before a TIMEOUT is thrown. */
   async relayoutAndWait(id: string, opts: { confirm?: boolean; pollIntervalMs?: number; timeoutMs?: number; idempotencyKey?: string } = {}): Promise<RelayoutJob | RelayoutStatus> {
     const started = await this.startRelayout(id, { confirm: opts.confirm, idempotencyKey: opts.idempotencyKey });
@@ -407,12 +408,12 @@ export class DiagramsClient {
         if (st.status === "done") {
           // The re-layout charge bills asynchronously and isn't in the poll response,
           // so the exact credits are unknown to this process — usageHistory has them.
-          if (chargeable) { this.recordUnknown("relayout", "chargeable re-layout applied; exact credits are in usageHistory"); recorded = true; }
+          if (chargeable) { this.recordUnknown("relayout", "re-layout applied; its exact cost figure is in usageHistory"); recorded = true; }
           return st;
         }
         if (st.status === "failed") return st;
         if (Date.now() >= deadline) {
-          if (chargeable) { this.recordUnknown("relayout", "chargeable re-layout still running when the wait elapsed; check usageHistory"); recorded = true; }
+          if (chargeable) { this.recordUnknown("relayout", "re-layout still running when the wait elapsed; check usageHistory"); recorded = true; }
           throw new DiagramsAPIError("TIMEOUT", "re-layout did not finish in time", 0);
         }
         await new Promise((r) => setTimeout(r, interval));
@@ -421,7 +422,7 @@ export class DiagramsClient {
       // A polling error leaves the outcome unknown: the job may still complete and
       // bill server-side. Record it once (unless already recorded above).
       if (chargeable && !recorded && e instanceof DiagramsAPIError) {
-        this.recordUnknown("relayout", "re-layout polling failed; the job may still complete and charge — check usageHistory");
+        this.recordUnknown("relayout", "re-layout polling failed; the job may still complete — check usageHistory");
       }
       throw e;
     }
@@ -494,8 +495,10 @@ export interface StoredCredentials {
 }
 
 export interface LoginOptions {
-  /** Mint a test-mode key (`livemode=false`). Test keys charge the same credits
-   * as live — not a free sandbox (lower rate limits only). */
+  /** Mint a test-mode key (`livemode=false`). Not a sandbox: a test key reads and
+   * writes the same real account and runs real AI calls. The only differences are a
+   * lower rate limit (20 requests/minute instead of 60) and `livemode: false` on the
+   * ledger rows. */
   test?: boolean;
   /** API base (defaults to the production API). */
   baseUrl?: string;
@@ -640,7 +643,7 @@ export async function login(opts: LoginOptions = {}): Promise<DiagramsClient> {
   const base = (opts.baseUrl ?? DEFAULT_BASE).replace(/\/+$/, "");
 
   if (opts.test) {
-    console.log("Test keys charge the same credits as live — not a free sandbox (lower rate limits only).");
+    console.log("Test keys are not a sandbox: they act on your real account (real diagrams, real AI calls) at a lower rate limit.");
   }
 
   const email = ((opts.email ?? "").trim()) || (await promptLoginEmail());

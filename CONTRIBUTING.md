@@ -7,7 +7,7 @@ package `@diagrams-so/sdk`.
 ## Licensing and conduct
 
 - This project is licensed under Apache-2.0. By submitting a contribution, you agree it is licensed under the repository's license (Apache License 2.0, Section 5: contributions are under the same terms unless you state otherwise). Only submit work you have the right to contribute.
-- Never include API keys, tokens, or customer data in code, examples, tests, or commit history. Use the offline stub in `local-test/` for zero-credit testing; remember that `dgz_test_` keys bill the account's real credit balance.
+- Never include API keys, tokens, or customer data in code, examples, tests, or commit history. Use the offline stub in `local-test/` for account-free testing; remember that `dgz_test_` keys act on the account's real data — they are not a sandbox.
 - Calls the SDKs make to `api.diagrams.so` are governed by the [Terms of Service](https://diagrams.so/policy/terms) and [Acceptable Use Policy](https://diagrams.so/policy/acceptable-use); the code license grants no rights to the API itself.
 - Security issues go to security@diagrams.so per [SECURITY.md](./SECURITY.md), not the issue tracker.
 - Be respectful and constructive. See [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md).
@@ -56,8 +56,8 @@ Keep the two clients at parity — every method should exist in both languages, 
 idiomatically (snake_case in Python, camelCase in TS).
 
 ## Conventions
-- **Retries:** only `429`/`503` are retried (pre-charge rejections); never retry other
-  errors — a billable POST must not be silently re-sent.
+- **Retries:** only `429`/`503` are retried (nothing ran yet); never retry other
+  errors — an AI POST must not be silently re-sent without its idempotency key.
 - **Errors:** all non-2xx raise/throw `DiagramsAPIError` carrying `code`, `status`,
   `request_id`. Don't leak raw response text when the house envelope is present.
 - **No new runtime dependencies** without discussion — both packages are intentionally

@@ -4,7 +4,7 @@
 //   DIAGRAMS_KEY=dgz_test_… DIAGRAMS_BASE=http://localhost:8000/api/v2 \
 //     node ../examples/try_local.mjs
 //
-// Reads/enhance/clarify are free; generate/edit/relayout cost credits.
+// Generation is unlimited on every plan; generate/edit/relayout just take longer than reads.
 import { DiagramsClient, DiagramsAPIError } from "../typescript/dist/index.js";
 
 const KEY = process.env.DIAGRAMS_KEY;
@@ -13,11 +13,11 @@ if (!KEY) { console.error("Set DIAGRAMS_KEY (mint one — see the steps)."); pro
 
 const c = new DiagramsClient({ apiKey: KEY, baseUrl: BASE });
 
-console.log("1) who am I / free reads");
+console.log("1) who am I / reads");
 console.log("   me:", await c.me());
 console.log("   providers:", await c.meta("providers"));
 
-console.log("\n2) free prompt helper");
+console.log("\n2) prompt helper");
 console.log("   enhance:", (await c.enhancePrompt("aws web app")).enhanced_prompt.slice(0, 60), "…");
 
 console.log("\n3) error handling (bad key → typed error)");
@@ -27,7 +27,7 @@ try {
   if (e instanceof DiagramsAPIError) console.log(`   raised DiagramsAPIError: ${e.code} ${e.status}`);
 }
 
-console.log("\n4) generate (real LLM — costs a credit)");
+console.log("\n4) generate (real LLM — takes a few seconds)");
 const d = await c.generate("GCP web app: LB, GCE, Cloud SQL", { cloudProvider: "gcp" });
 console.log(`   id=${d.id}  score=${d.score?.score}  warnings=${d.warnings.length}`);
 
