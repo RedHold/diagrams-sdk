@@ -181,7 +181,7 @@ def test_login_test_mode_warns_and_sends_livemode_false(capsys):
     with stub_server([(200, token)]) as (base, log):
         diagrams_so.login(test=True, base_url=base, open_browser=False)
     out = capsys.readouterr().out
-    assert "Test keys charge the same credits as live" in out
+    assert "Test keys are not a sandbox" in out
     assert log[0][1]["livemode"] is False
     assert json.load(open(credentials_path()))["livemode"] is False
 

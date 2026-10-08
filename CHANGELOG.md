@@ -1,5 +1,34 @@
 # Changelog
 
+## [Unreleased]
+Pricing collapsed to two plans and credits removed. **No SDK code changed and no
+response shape changed** — this is a documentation and wording release.
+
+- **There are no credits.** Generation is unlimited on both plans: Free ($0) and
+  Paid ($20/month, or $100/year). Nothing the SDK calls is metered, there is no
+  balance, and nobody runs out. The only ceiling is the existing per-minute rate
+  limit. Every doc claim that reads/helpers are "free" while
+  `generate`/`edit`/`fix`/`relayout`/`fork` "cost credits" is gone.
+- **The API contract is unchanged, deliberately.** `GET /usage` still exists and
+  reports unlimited; responses still carry a `usage` block and `credits_charged`
+  still returns the real internal cost of the call, so you can still see what a
+  call cost even though it is not billed. `session_charges` / `sessionCharges`,
+  `usage_history` / `usageHistory` and `DiagramsAPIError.upgrade_url` /
+  `.upgradeUrl` all keep their names and behaviour. **Existing code that catches
+  `402 QUOTA_EXCEEDED` or reads `credits_remaining` keeps working** — the code is
+  still documented, it simply stops firing.
+- **Paid adds exactly two things:** exports without a watermark, and `.drawio`
+  export. `export(…, "drawio")` answers `403 UPGRADE_REQUIRED` on Free; `svg` works
+  on both and is watermarked on Free. (There is no PDF or PNG export in `/api/v2`.)
+- **Test-key guidance corrected.** The old warning — "test keys charge the same
+  credits as live" — only made sense when there was a balance to draw. The real
+  caution is that a `dgz_test_` key is *not* a sandbox: it reads and writes the same
+  real account (real diagrams created, edited and deleted; real AI calls) at a lower
+  rate limit (20 requests/minute instead of 60), with `livemode: false` on the ledger
+  rows. `login(test=True)` and `diagrams-so login --test` print the new wording.
+- Idempotency and the retry ladder are unchanged; the reason they matter is now
+  stated correctly — a replayed response means one *diagram*, not one *charge*.
+
 ## [1.2.0] — 2026-08
 Device-flow login (RFC 8628) — both SDKs, zero new runtime dependencies.
 

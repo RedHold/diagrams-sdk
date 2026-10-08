@@ -170,8 +170,10 @@ def login(test: bool = False, base_url: Optional[str] = None,
     minted API key is cached at ``~/.diagrams-so/credentials.json`` so
     ``DiagramsClient()`` works with no arguments from then on.
 
-    :param test: mint a test-mode key (``livemode=false``). Test keys charge the
-        same credits as live — not a free sandbox (lower rate limits only).
+    :param test: mint a test-mode key (``livemode=false``). Not a sandbox: a test
+        key reads and writes the same real account and runs real AI calls. The only
+        differences are a lower rate limit (20 requests/minute instead of 60) and
+        ``livemode: false`` on the ledger rows.
     :param base_url: API base (defaults to the production API).
     :param open_browser: open the verification URL automatically.
     :param email: the email to receive the one-time code (defaults to
@@ -180,7 +182,7 @@ def login(test: bool = False, base_url: Optional[str] = None,
     base = (base_url or DEFAULT_BASE).rstrip("/")
 
     if test:
-        print("Test keys charge the same credits as live — not a free sandbox (lower rate limits only).")
+        print("Test keys are not a sandbox: they act on your real account (real diagrams, real AI calls) at a lower rate limit.")
 
     email = (email or "").strip() or _prompt_email()
     if not email or "@" not in email:

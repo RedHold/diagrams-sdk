@@ -4,8 +4,8 @@ A thin, typed, **zero-dependency** client for the [Diagrams.so](https://diagrams
 
 - Covers **all 27** `/api/v2` operations · one method per endpoint · fully typed responses
 - Zero deps · single `DiagramsAPIError` with `.code` / `.status` / `.requestId`
-- **Safe billing:** every billable call auto-attaches an `Idempotency-Key` and retries *ambiguous* failures (timeout / 5xx / in-progress) with the **same key**, so a response lost to a gateway timeout is replayed — one charge, never two
-- Built-in `429`/`503` backoff (honors `Retry-After`), async-generator **stream**, re-layout helper, and an in-process credit tally (`sessionCharges`)
+- **Safe retries:** every AI call auto-attaches an `Idempotency-Key` and retries *ambiguous* failures (timeout / 5xx / in-progress) with the **same key**, so a response lost to a gateway timeout is replayed — one diagram, never two
+- Built-in `429`/`503` backoff (honors `Retry-After`), async-generator **stream**, re-layout helper, and an in-process cost tally (`sessionCharges`)
 
 ## Install
 ```bash
@@ -30,7 +30,7 @@ set `DIAGRAMS_API_KEY`.
 ```ts
 import { DiagramsClient } from "@diagrams-so/sdk";
 
-const client = new DiagramsClient({ apiKey: "dgz_live_…" }); // or dgz_test_… (test mode — bills the same credits)
+const client = new DiagramsClient({ apiKey: "dgz_live_…" }); // or dgz_test_… (test mode — same real account, lower rate limit)
 
 const d = await client.generate("AWS 3-tier web app: ALB, EC2, RDS", { cloudProvider: "aws" });
 console.log(d.id, d.score?.score, d.warnings.length);
@@ -41,8 +41,8 @@ if (w.length) await client.fix(d.id, w[0].message, { component: w[0].component ?
 const drawio = await client.export(d.id, "drawio"); // native .drawio XML string
 ```
 
-## Authentication & billing
-Pass your key (from **Settings → AI Provider**). `dgz_live_` keys bill credits for `generate`/`edit`/`fix`/`relayout`/`fork`; `dgz_test_` keys are test mode — they bill the same credits (drawing your real balance, like a live key), at lower test rate limits. Reads and `enhancePrompt`/`clarifyPrompt` are free. Check balance with `client.usage()`.
+## Authentication & plans
+Pass your key (from **Settings → AI Provider**). **Nothing you call is metered:** generation is unlimited on both plans — Free ($0) and Paid ($20/month, or $100/year) — and the per-minute rate limit is the only ceiling. The Paid plan adds exactly two things: exports without a watermark, and `.drawio` export. `dgz_test_` keys are test mode, not a sandbox — they act on the same real account (real diagrams created, edited, deleted; real AI calls) at a lower rate limit (20 requests/minute instead of 60). `client.usage()` reports your plan and what each action costs us to run.
 
 ## Errors
 ```ts
@@ -51,24 +51,24 @@ try {
   await client.generate("…");
 } catch (e) {
   if (e instanceof DiagramsAPIError) {
-    console.log(e.code, e.status, e.requestId); // e.g. QUOTA_EXCEEDED 402 req_abc
+    console.log(e.code, e.status, e.requestId); // e.g. VALIDATION_ERROR 422 req_abc
   }
 }
 ```
 
 ## Idempotency
-Every billable call (`generate`, `edit`, `fix`, `startRelayout`) **auto-attaches a
+Every AI call (`generate`, `edit`, `fix`, `startRelayout`) **auto-attaches a
 fresh `Idempotency-Key`** and retries ambiguous failures with that same key, so a
-timeout never double-charges. Pass your own key to make the window explicit or to
-dedupe across processes:
+timeout never turns one call into two diagrams. Pass your own key to make the window
+explicit or to dedupe across processes:
 ```ts
 await client.generate("…", { idempotencyKey: "order-42" }); // server replays the stored result for 24h
 ```
-Definite rejections (`401`/`402`/`404`/`422`) are never retried; a call whose outcome
+Definite rejections (`401`/`403`/`404`/`422`) are never retried; a call whose outcome
 is lost is recorded in `client.sessionCharges` as `status:"unknown"` — reconcile with
-`client.usageHistory()`. Streamed generations tally a `confirmed` charge on their
-terminal event; an applied re-layout tallies `unknown` (its credits bill
-asynchronously — the exact amount is in `usageHistory`).
+`client.usageHistory()`. Streamed generations tally a `confirmed` cost on their
+terminal event; an applied re-layout tallies `unknown` (its cost is recorded
+asynchronously — the exact figure is in `usageHistory`).
 
 ## Streaming
 ```ts
@@ -79,16 +79,15 @@ for await (const { event, data } of client.generateStream("AWS event-driven pipe
 }
 ```
 (The TS SDK yields `{ event, data }` objects; the Python SDK yields `(event, data)` tuples — each idiomatic to its language.)
-The diagram XML arrives only in the terminal `complete` event (after the charge).
+The diagram XML arrives only in the terminal `complete` event, once generation finishes.
 
 ## Async re-layout
-Re-layout is token-billed on **every** run (no free allowance) and charged only on
-delivery. The first call returns `confirmation_required`; re-call with `confirm:true`
-to accept the charge:
+Re-layout runs the model on **every** call, so it always asks first. The first call
+returns `confirmation_required`; re-call with `confirm:true` to go ahead:
 ```ts
 let job = await client.relayoutAndWait(d.id);
 if ((job as any).status === "confirmation_required") { // re-layout always needs confirmation
-  job = await client.relayoutAndWait(d.id, { confirm: true }); // accept the credit charge
+  job = await client.relayoutAndWait(d.id, { confirm: true }); // go ahead and re-lay it out
 }
 ```
 
@@ -111,7 +110,7 @@ new DiagramsClient({ apiKey, baseUrl?, timeoutMs?, maxRetries?, backoffMs?,
 `timeoutMs` defaults to **450 000** (above the server-side timeout ladder, so the
 client never aborts work the server would still deliver). `baseUrl` defaults to
 `https://api.diagrams.so/api/v2` (point at `http://localhost:8000/api/v2` for local
-dev). Reads retry `429`/`503` (honoring `Retry-After`). Billable calls retry `429` the
+dev). Reads retry `429`/`503` (honoring `Retry-After`). AI calls retry `429` the
 same way and every *ambiguous* failure (timeout / `502`/`503`/`504` / in-progress)
 through the same-key idempotent ladder (`retryDelaysMs` between attempts, capped at
 `retryBudgetMs` total) — a **single** retry layer, so a busy server is never poked twice.

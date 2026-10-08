@@ -188,7 +188,7 @@ test("login test mode warns and requests livemode:false", async (t) => {
   const { base, log, close } = await stubServer([[200, token]]);
   try {
     await login({ test: true, baseUrl: base, openBrowser: false, email: EMAIL });
-    assert.ok(lines.some((l) => l.includes("Test keys charge the same credits as live")));
+    assert.ok(lines.some((l) => l.includes("Test keys are not a sandbox")));
     assert.equal(log[0].body.livemode, false);
     assert.equal(JSON.parse(readFileSync(credentialsPath(), "utf8")).livemode, false);
   } finally {

@@ -6,8 +6,9 @@
     print(d["id"], d["score"]["score"])
 
 Every method maps 1:1 to an endpoint. Errors raise DiagramsAPIError carrying the
-API's error code, HTTP status, and request_id. Reads are free; generate/edit/fix/
-fork cost credits.
+API's error code, HTTP status, and request_id. Generation is unlimited on every
+plan — nothing is metered; generate/edit/fix/fork run an AI model, so they take
+seconds rather than milliseconds.
 """
 
 from .auth import DiagramsAuthError, login, logout

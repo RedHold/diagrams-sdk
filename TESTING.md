@@ -1,12 +1,12 @@
 # Local testing guide — Diagrams.so SDKs (v1.1.0)
 
-Everything here runs **fully offline and spends zero credits**. It exercises both
-SDKs — unit tests, real-socket end-to-end tests against a local stub API, and the
-release packaging — and proves the v1.1.0 billing-safety behaviour (idempotent
-retries, honest tally, timeout ladder, no-free-relayout).
+Everything here runs **fully offline, with no account and no network**. It exercises
+both SDKs — unit tests, real-socket end-to-end tests against a local stub API, and
+the release packaging — and proves the retry-safety behaviour (idempotent retries,
+honest cost tally, timeout ladder, re-layout confirm gate).
 
-> A live smoke against the real API (which **does** spend credits) is optional and
-> covered last.
+> A live smoke against the real API (which creates real diagrams in a real account)
+> is optional and covered last.
 
 **Prerequisites:** Python ≥ 3.9, Node ≥ 18. From the repo root unless noted.
 
@@ -66,8 +66,8 @@ cd typescript && npm run build && npm test && cd ..
 ## 3. End-to-end integration (real transport, local stub API)
 
 This is the important one: the **real** SDK transport talks HTTP over a socket to a
-local stub (`local-test/stub_api.py`) that injects failures to prove the billing
-guarantees. No mocks, no credits.
+local stub (`local-test/stub_api.py`) that injects failures to prove the replay
+guarantees. No mocks, no account, no network.
 
 Open **two terminals** (or background the stub).
 
@@ -90,20 +90,20 @@ node local-test/it_typescript.mjs        # TypeScript SDK -> 28 passed
 | # | Scenario | What it verifies |
 |---|----------|------------------|
 | 1 | reads (`me`, `usage`) | auth headers + JSON round-trip |
-| 2 | generate happy path | one charge; tally = `confirmed` |
-| 3 | **`FAIL_ONCE_504`** — response lost after the charge | same-key retry **replays** the stored result → **exactly one charge**, id recovered, tally `confirmed` |
-| 4 | **`FAIL_ALWAYS_504`** — hard ambiguous outage | retries exhaust → error raised, **server never charged**, tally = `unknown` |
-| 5 | **`FAIL_422`** — definite reject | **no retry**, no charge, no tally entry |
-| 6 | shared explicit `idempotency_key` | two calls, **one charge** (server replays the 2nd) |
-| 7 | edit + fix | both billable + idempotent |
-| 8 | re-layout confirm flow | first call → `confirmation_required`; `confirm=true` → `done`/`applied`, charged **on delivery** |
+| 2 | generate happy path | one diagram, one cost row; tally = `confirmed` |
+| 3 | **`FAIL_ONCE_504`** — response lost after the work completed | same-key retry **replays** the stored result → **exactly one diagram**, id recovered, tally `confirmed` |
+| 4 | **`FAIL_ALWAYS_504`** — hard ambiguous outage | retries exhaust → error raised, **server never ran it**, tally = `unknown` |
+| 5 | **`FAIL_422`** — definite reject | **no retry**, nothing ran, no tally entry |
+| 6 | shared explicit `idempotency_key` | two calls, **one diagram** (server replays the 2nd) |
+| 7 | edit + fix | both AI calls + idempotent |
+| 8 | re-layout confirm flow | first call → `confirmation_required`; `confirm=true` → `done`/`applied`, cost recorded **on delivery** |
 | 9 | SSE streaming generate | `progress` then terminal `complete` with an id |
 | 10 | `usage_history` | reflects the server ledger |
 
 > The stub's failure tokens (`FAIL_ONCE_504`, `FAIL_ALWAYS_504`, `FAIL_422`) are just
 > magic strings in the prompt — see the header of `local-test/stub_api.py`.
 
-**Inspect the server-side ledger any time** (proves charge counts independently):
+**Inspect the server-side ledger any time** (proves the run counts independently):
 ```bash
 curl -s http://127.0.0.1:8899/__debug | python3 -m json.tool
 ```
@@ -138,10 +138,12 @@ README, LICENSE, NOTICE, package.json).
 
 ---
 
-## 5. (Optional) Live smoke against the real API — spends credits
+## 5. (Optional) Live smoke against the real API
 
-Only if you want to confirm against production. **This bills your account** for
-generate/edit/relayout. Use a `dgz_test_` key (still bills, at lower rate limits).
+Only if you want to confirm against production. **This creates, edits and re-lays out
+real diagrams in a real account** — nothing is billed (generation is unlimited on
+both plans), but the data is real. A `dgz_test_` key is not a sandbox: it writes the
+same account, just at a lower rate limit (20 requests/minute instead of 60).
 
 ```bash
 export DIAGRAMS_API_KEY="dgz_test_…"
@@ -168,7 +170,7 @@ To point any test at a **local** API instead of production, set the base URL:
 - [ ] `cd typescript && npm pack --dry-run` → **1.1.0, 6 files**
 
 Everything green = the SDKs are correct and release-ready locally. Nothing here
-touches the network beyond `127.0.0.1` or spends credits.
+touches the network beyond `127.0.0.1` or needs an account.
 
 ---
 

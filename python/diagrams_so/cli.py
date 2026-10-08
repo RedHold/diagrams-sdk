@@ -31,7 +31,7 @@ Commands:
   whoami    Show which account this machine is connected as.
 
 Options:
-  --test        Mint a test-mode key. Test keys bill the same credits as live.
+  --test        Mint a test-mode key. Not a sandbox: same real account, lower rate limit.
   --base-url    Point at a different API (default {base}).
   --no-browser  Do not open a browser; the URL is printed for you to open.
 """.strip()
