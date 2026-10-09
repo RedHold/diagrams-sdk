@@ -83,7 +83,7 @@ cd typescript && npm install && npm run build && cd ..
 
 ## 2. Get an API key
 
-Create a key on **Settings → AI Provider** in your Diagrams.so account.
+Create a key on **Settings → API Keys** in your Diagrams.so account.
 
 - `dgz_test_…` — **use this while trying out.** Test mode: works on your real account, at lower rate limits.
 - `dgz_live_…` — production key.
