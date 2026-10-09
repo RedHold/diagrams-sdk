@@ -5,8 +5,8 @@ A thin, typed, **dependency-free** client for the [Diagrams.so](https://diagrams
 - Covers **all 27** `/api/v2` operations · one method per endpoint
 - **No hard dependencies** — uses `requests` if installed, else stdlib `urllib`
 - Typed, ships `py.typed` · raises a single `DiagramsAPIError` with `code` / `status` / `request_id`
-- **Safe billing:** every billable call auto-attaches an `Idempotency-Key` and retries *ambiguous* failures (timeout / 5xx / in-progress) with the **same key**, so a response lost to a gateway timeout is replayed — one charge, never two
-- Built-in `429`/`503` backoff (honors `Retry-After`), **SSE streaming**, async **re-layout** helper, and an in-process credit tally (`session_charges`)
+- **Safe retries:** every AI call auto-attaches an `Idempotency-Key` and retries *ambiguous* failures (timeout / 5xx / in-progress) with the **same key**, so a response lost to a gateway timeout is replayed: one diagram, never two
+- Built-in `429`/`503` backoff (honors `Retry-After`), **SSE streaming**, async **re-layout** helper, and an in-process task tally (`session_charges`)
 
 ## Install
 ```bash
@@ -30,7 +30,7 @@ In code, `DiagramsClient()` then needs no arguments. For CI, set
 ```python
 from diagrams_so import DiagramsClient
 
-client = DiagramsClient(api_key="dgz_live_…")   # or dgz_test_… (test mode — bills the same credits)
+client = DiagramsClient(api_key="dgz_live_…")   # or dgz_test_… (test mode: same account, lower rate limits)
 
 d = client.generate("AWS 3-tier web app: ALB, EC2, RDS", cloud_provider="aws")
 print(d["id"], d["score"]["score"], len(d["warnings"]))
@@ -46,8 +46,8 @@ open("diagram.drawio", "w").write(client.export(d["id"], "drawio"))
 ### Diagram type
 `diagram_type` is optional. Leave it out and the SDK does not send it, so the server picks the kind of diagram for your prompt. Pass a value to choose: `diagram_type="architecture"` or `diagram_type="auto"` is sent as given. Up to 1.3.0 the SDK always sent `"architecture"`; to keep that exact behaviour, pass it explicitly. `client.meta("diagram-types")` lists the values the API accepts.
 
-## Authentication & billing
-Pass your key (from **Settings → AI Provider** in your account). `dgz_live_` keys bill credits for `generate`/`edit`/`fix`/`relayout`/`fork`; `dgz_test_` keys are test mode — they bill the same credits (drawing your real balance, like a live key), at lower test rate limits. Reads and `enhance`/`clarify` are free. Check balance with `client.usage()`.
+## Authentication & plans
+Pass your key (from **Settings → AI Provider** in your account). Every plan has unlimited diagrams and edits; nothing is metered, there is only a per-minute rate limit. Paid adds no watermark and draw.io export; Free diagrams can be private. `dgz_test_` keys are test mode: they work on your real account, like a live key, at lower test rate limits. See your plan with `client.usage()`.
 
 ## Errors
 Every non-2xx raises `DiagramsAPIError`:
@@ -58,22 +58,22 @@ try:
 except DiagramsAPIError as e:
     print(e.code, e.status, e.request_id)   # e.g. QUOTA_EXCEEDED 402 req_abc
     if e.status == 402:
-        ...  # out of credits → send the user to upgrade
+        ...  # needs the Paid plan → send the user to upgrade
 ```
 
-## Idempotency (safe retries on billable ops)
-Every billable call (`generate`, `edit`, `fix`, `relayout`) **auto-attaches a fresh
-`Idempotency-Key`** and retries ambiguous failures with that same key, so you never
-double-charge on a timeout. Pass your own key to make the safety window explicit or
+## Idempotency (safe retries)
+Every AI call (`generate`, `edit`, `fix`, `relayout`) **auto-attaches a fresh
+`Idempotency-Key`** and retries ambiguous failures with that same key, so a timeout
+never makes a second diagram. Pass your own key to make the safety window explicit or
 to dedupe across processes:
 ```python
 client.generate("…", idempotency_key="order-42")   # server replays the stored result for 24h
 ```
 Definite rejections (`401`/`402`/`404`/`422`) are never retried; a call whose outcome
 is lost is recorded in `session_charges` as `status="unknown"` — reconcile with
-`client.usage_history()`. Streamed generations tally a `confirmed` charge on their
-terminal event; an applied re-layout tallies `unknown` (its credits bill
-asynchronously — the exact amount is in `usage_history`).
+`client.usage_history()`. Streamed generations tally a `confirmed` entry on their
+terminal event; an applied re-layout tallies `unknown` (the server records it
+asynchronously, so check `usage_history`).
 
 ## Streaming
 ```python
@@ -81,16 +81,15 @@ for event, data in client.generate_stream("AWS event-driven pipeline"):
     if event == "progress":
         print(data["progress"], data["message"])
     elif event == "complete":
-        print(data["id"], data["usage"]["credits_charged"])
+        print(data["id"])
     elif event == "error":
         raise RuntimeError(data["error"]["message"])
 ```
-The diagram XML arrives only in the terminal `complete` event (after the charge).
+The diagram XML arrives only in the terminal `complete` event.
 
 ## Async re-layout
-Re-layout is token-billed on **every** run (no free allowance) and charged only on
-delivery of the re-laid diagram. The first call returns `confirmation_required`;
-re-call with `confirm=True` to accept the charge:
+Re-layout replaces the current layout, so it asks first. The first call returns
+`confirmation_required`; re-call with `confirm=True` to go ahead:
 ```python
 job = client.relayout_and_wait(d["id"])           # starts + polls to completion
 if job.get("status") == "confirmation_required":  # re-layout always needs confirmation

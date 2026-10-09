@@ -36,7 +36,7 @@ def test_generate_posts_body_and_idempotency_header():
 
 def test_error_envelope_raises_typed_error():
     c = DiagramsClient(api_key="dgz_test_x")
-    body = {"error": {"code": "QUOTA_EXCEEDED", "message": "no credits", "request_id": "req_1"}}
+    body = {"error": {"code": "QUOTA_EXCEEDED", "message": "payment required", "request_id": "req_1"}}
     with mock.patch.object(c, "_send", return_value=_resp(402, body)):
         with pytest.raises(DiagramsAPIError) as ei:
             c.generate("hi")

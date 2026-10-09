@@ -16,6 +16,14 @@ both SDKs.
   request with no type is treated as `"auto"`.
 - Up to 1.3.0 the SDKs always sent `"architecture"`. Pass it explicitly to keep
   that type after the server setting changes.
+- **Unlimited diagrams and edits on every plan.** READMEs, docstrings, examples
+  and the `login` test-key notice no longer talk about a balance or a cost per
+  task. The examples stop printing the `usage` numbers. Field and key names
+  (`credits_charged`, `credits_remaining`, `total_credits_charged`, and the
+  `session_charges` / `sessionCharges` entries) are unchanged so existing code
+  keeps working; `credits_remaining` is always -1 now. The README section
+  "Test locally, offline" replaces the old section 6 title, and its links are
+  updated.
 
 ## [1.2.0] — 2026-08
 Device-flow login (RFC 8628) — both SDKs, zero new runtime dependencies.

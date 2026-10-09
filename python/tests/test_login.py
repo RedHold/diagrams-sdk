@@ -181,7 +181,7 @@ def test_login_test_mode_warns_and_sends_livemode_false(capsys):
     with stub_server([(200, token)]) as (base, log):
         diagrams_so.login(test=True, base_url=base, open_browser=False)
     out = capsys.readouterr().out
-    assert "Test keys charge the same credits as live" in out
+    assert "Test keys act on your real account" in out
     assert log[0][1]["livemode"] is False
     assert json.load(open(credentials_path()))["livemode"] is False
 
@@ -252,7 +252,7 @@ def test_logout_deletes_cache_and_is_idempotent():
 
 def test_upgrade_url_from_402_payload():
     c = DiagramsClient(api_key="dgz_test_x")
-    body = {"error": {"code": "QUOTA_EXCEEDED", "message": "no credits",
+    body = {"error": {"code": "QUOTA_EXCEEDED", "message": "payment required",
                       "upgrade_url": "https://diagrams.so/billing?upgrade=1"}}
     with mock.patch.object(c, "_send", return_value=(402, {}, json.dumps(body))):
         with pytest.raises(DiagramsAPIError) as ei:

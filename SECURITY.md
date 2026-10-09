@@ -10,7 +10,7 @@ Please do not open public GitHub issues for security reports.
 
 - Both SDKs are thin, dependency-free clients for `api.diagrams.so`. They contain no telemetry and store nothing except what you pass them; the optional `login` helper stores credentials at `~/.diagrams-so/credentials.json` with owner-only permissions.
 - Never hardcode an API key in source, examples, or tests. Use the `DIAGRAMS_API_KEY` environment variable. If a key may have been exposed, revoke it in the dashboard immediately; revocation is immediate.
-- Test-mode keys (`dgz_test_`) spend the real Credit balance of the account and deserve the same care as live keys. The offline stub in `local-test/` lets you exercise everything with zero credits.
+- Test-mode keys (`dgz_test_`) act on the real account (they can create, change and delete its diagrams) and deserve the same care as live keys. The offline stub in `local-test/` lets you exercise everything without an account.
 
 ## Supported versions
 

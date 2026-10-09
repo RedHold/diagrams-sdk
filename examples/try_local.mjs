@@ -4,7 +4,7 @@
 //   DIAGRAMS_KEY=dgz_test_… DIAGRAMS_BASE=http://localhost:8000/api/v2 \
 //     node ../examples/try_local.mjs
 //
-// Reads/enhance/clarify are free; generate/edit/relayout cost credits.
+// Every plan has unlimited diagrams and edits.
 import { DiagramsClient, DiagramsAPIError } from "../typescript/dist/index.js";
 
 const KEY = process.env.DIAGRAMS_KEY;
@@ -27,7 +27,7 @@ try {
   if (e instanceof DiagramsAPIError) console.log(`   raised DiagramsAPIError: ${e.code} ${e.status}`);
 }
 
-console.log("\n4) generate (real LLM — costs a credit)");
+console.log("\n4) generate (real LLM)");
 const d = await c.generate("GCP web app: LB, GCE, Cloud SQL", { cloudProvider: "gcp" });
 console.log(`   id=${d.id}  score=${d.score?.score}  warnings=${d.warnings.length}`);
 

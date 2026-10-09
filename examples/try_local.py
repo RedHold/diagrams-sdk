@@ -3,8 +3,8 @@
     DIAGRAMS_KEY=dgz_test_… DIAGRAMS_BASE=http://localhost:8000/api/v2 \
         python3 sdk/examples/try_local.py
 
-No install needed — the SDK is stdlib-only. Reads/enhance/clarify are free;
-generate/edit/relayout cost credits (a Pro test key has plenty)."""
+No install needed: the SDK is stdlib-only. Every plan has unlimited diagrams
+and edits."""
 import os
 import sys
 
@@ -32,7 +32,7 @@ try:
 except DiagramsAPIError as e:
     print(f"   raised DiagramsAPIError: {e.code} {e.status}")
 
-print("\n4) generate (real LLM — costs a credit)")
+print("\n4) generate (real LLM)")
 d = c.generate("AWS 3-tier web app: ALB, 2x EC2, RDS", cloud_provider="aws")
 did = d["id"]
 print(f"   id={did}  score={d['score']['score']}  warnings={len(d['warnings'])}")

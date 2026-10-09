@@ -27,7 +27,7 @@ class DiagramsAPIError(Exception):
 
     @property
     def upgrade_url(self) -> Optional[str]:
-        """Where to add credits/upgrade — from the 402 QUOTA_EXCEEDED payload if
+        """Where to upgrade to the Paid plan, from the 402 QUOTA_EXCEEDED payload if
         the API sent one, else ``None``."""
         return self._upgrade_url
 
@@ -89,14 +89,16 @@ class DiagramsClient:
         # billable call — including retries — is capped at retry_budget seconds.
         self.retry_delays = tuple(retry_delays)
         self.retry_budget = retry_budget
-        # Identify this client so the API attributes charges to source="sdk-python"
-        # in the credit-consumption history (X-Diagrams-Client wins; User-Agent is a
+        # Identify this client so the API attributes tasks to source="sdk-python"
+        # in the task history (X-Diagrams-Client wins; User-Agent is a
         # fallback). Import here to avoid a circular import at module load.
         from . import __version__ as _v
         self._client_id = f"sdk-python/{_v}"
         self._user_agent = f"diagrams-so-python/{_v}"
-        # Running tally of credits this client charged in-process — answers
-        # "how much did each task cost?" instantly, no server round-trip.
+        # Running tally of the tasks this client ran in-process; it answers "did
+        # that task already run?" instantly, no server round-trip. Confirmed
+        # entries keep the "credits_charged" / "credits_remaining" keys so
+        # existing code does not break; credits_remaining is always -1 now.
         self.session_charges: List[Dict[str, Any]] = []
 
     # -- transport ---------------------------------------------------------
@@ -199,8 +201,8 @@ class DiagramsClient:
 
     # -- session charge tally ---------------------------------------------
     def _track(self, action: str, result: Dict[str, Any]) -> Dict[str, Any]:
-        """Record what a billable task charged, so ``session_charges`` can answer
-        'how much did each task cost?' without a server round-trip. This counts only
+        """Record a finished task, so ``session_charges`` can answer 'did that task
+        already run?' without a server round-trip. This counts only
         what THIS process saw; the server ledger (:meth:`usage_history`) is
         authoritative, and ambiguous outcomes go through :meth:`_track_unknown`."""
         try:
@@ -287,7 +289,7 @@ class DiagramsClient:
                 if event == "progress":
                     print(data["progress"], data["message"])
                 elif event == "complete":
-                    print(data["id"], data["usage"]["credits_charged"])
+                    print(data["id"])
                 elif event == "error":
                     raise RuntimeError(data["error"]["message"])
 
@@ -387,10 +389,9 @@ class DiagramsClient:
     def relayout(self, diagram_id: str, *, confirm: bool = False,
                  idempotency_key: Optional[str] = None) -> Dict[str, Any]:
         """Start an async AI re-layout. Returns a job dict with ``job_id`` and
-        ``status``. Re-layout is token-billed on **every** run (no free allowance):
-        the API returns ``{"status": "confirmation_required"}`` until you re-call
-        with ``confirm=True`` to accept the charge, which is applied only on delivery
-        of the re-laid diagram (crash = no charge). Poll with :meth:`relayout_status`,
+        ``status``. Re-layout replaces the current layout, so it asks first: the API
+        returns ``{"status": "confirmation_required"}`` until you re-call with
+        ``confirm=True``. Poll with :meth:`relayout_status`,
         or use :meth:`relayout_and_wait`."""
         return self._request_billable(
             "POST", f"/diagrams/{diagram_id}/relayout", action="relayout",
@@ -425,11 +426,11 @@ class DiagramsClient:
                 st = self.relayout_status(diagram_id, job_id)
                 if st.get("status") in ("done", "failed"):
                     if st.get("status") == "done" and chargeable:
-                        # The re-layout charge bills asynchronously and isn't in the
-                        # poll response, so the exact credits are unknown to this
-                        # process — the ledger (usage_history) has them. Mirrors MCP.
+                        # The server records the re-layout asynchronously and it
+                        # isn't in the poll response, so this process cannot
+                        # confirm it; the ledger (usage_history) can. Mirrors MCP.
                         self._track_unknown("relayout",
-                                            note="chargeable re-layout applied; exact credits are in usage_history")
+                                            note="re-layout applied; the task is listed in usage_history")
                         recorded = True
                     return st
                 if time.monotonic() >= deadline:
@@ -500,8 +501,9 @@ class DiagramsClient:
                       diagram_id: Optional[str] = None, livemode: Optional[bool] = None,
                       since: Optional[str] = None, until: Optional[str] = None,
                       include_grants: bool = False) -> Dict[str, Any]:
-        """One page of the per-task credit-consumption history — how much each task
-        (generate/edit/fix/relayout) charged, newest first. Returns
+        """One page of the per-task history (generate/edit/fix/relayout), newest
+        first. Each item keeps the ``credits_charged`` field so existing code does
+        not break. Returns
         ``{items, next_cursor, has_more, summary}``. ``action``/``source`` are lists;
         ``since``/``until`` are ISO-8601 bounds (map to the API's ``from``/``to``)."""
         params: Dict[str, Any] = {

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """End-to-end integration test: the REAL Python SDK transport against the local
-stub API (local-test/stub_api.py). Zero credits. Proves idempotency replay, the
+stub API (local-test/stub_api.py). Fully offline. Proves idempotency replay, the
 ambiguous-retry ladder, the honest tally, streaming, and the re-layout confirm
 flow over an actual socket.
 
@@ -113,7 +113,7 @@ def main():
     job = c.relayout_and_wait(d["id"], confirm=True)
     check("confirmed run reaches done+applied", job.get("status") == "done" and job.get("applied") is True)
     check("re-layout charged on delivery", charges() - n0 == 1)
-    check("re-layout recorded an UNKNOWN tally (credits async in ledger)",
+    check("re-layout recorded an UNKNOWN tally (recorded async in ledger)",
           any(s["action"] == "relayout" and s["status"] == "unknown" for s in c.session_charges[t0:]))
 
     print("9) SSE streaming generate")
