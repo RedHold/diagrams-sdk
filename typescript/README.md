@@ -4,8 +4,8 @@ A thin, typed, **zero-dependency** client for the [Diagrams.so](https://diagrams
 
 - Covers **all 27** `/api/v2` operations · one method per endpoint · fully typed responses
 - Zero deps · single `DiagramsAPIError` with `.code` / `.status` / `.requestId`
-- **Safe billing:** every billable call auto-attaches an `Idempotency-Key` and retries *ambiguous* failures (timeout / 5xx / in-progress) with the **same key**, so a response lost to a gateway timeout is replayed — one charge, never two
-- Built-in `429`/`503` backoff (honors `Retry-After`), async-generator **stream**, re-layout helper, and an in-process credit tally (`sessionCharges`)
+- **Safe retries:** every AI call auto-attaches an `Idempotency-Key` and retries *ambiguous* failures (timeout / 5xx / in-progress) with the **same key**, so a response lost to a gateway timeout is replayed: one diagram, never two
+- Built-in `429`/`503` backoff (honors `Retry-After`), async-generator **stream**, re-layout helper, and an in-process task tally (`sessionCharges`)
 
 ## Install
 ```bash
@@ -30,7 +30,7 @@ set `DIAGRAMS_API_KEY`.
 ```ts
 import { DiagramsClient } from "@diagrams-so/sdk";
 
-const client = new DiagramsClient({ apiKey: "dgz_live_…" }); // or dgz_test_… (test mode — bills the same credits)
+const client = new DiagramsClient({ apiKey: "dgz_live_…" }); // or dgz_test_… (test mode: same account, lower rate limits)
 
 const d = await client.generate("AWS 3-tier web app: ALB, EC2, RDS", { cloudProvider: "aws" });
 console.log(d.id, d.score?.score, d.warnings.length);
@@ -38,11 +38,18 @@ console.log(d.id, d.score?.score, d.warnings.length);
 const w = await client.warnings(d.id);
 if (w.length) await client.fix(d.id, w[0].message, { component: w[0].component ?? undefined, warningType: w[0].type });
 
-const drawio = await client.export(d.id, "drawio"); // native .drawio XML string
+const drawio = await client.export(d.id, "drawio"); // native .drawio XML string (Paid plan)
+const svg = await client.export(d.id, "svg");       // every plan; watermarked on Free
 ```
 
-## Authentication & billing
-Pass your key (from **Settings → AI Provider**). `dgz_live_` keys bill credits for `generate`/`edit`/`fix`/`relayout`/`fork`; `dgz_test_` keys are test mode — they bill the same credits (drawing your real balance, like a live key), at lower test rate limits. Reads and `enhancePrompt`/`clarifyPrompt` are free. Check balance with `client.usage()`.
+### Free plan: watermarked images, Paid: the draw.io file
+On the Free plan the API leaves `xml` out: `d.xml` is `null`, `d.xml_withheld` is `true`, and `d.export_url` points at the watermarked SVG. `client.imageUrl(d)` gives the absolute URL (fetch it with the same key), or call `client.export(d.id, "svg")`. `export(id, "drawio")` throws `DiagramsAPIError` with code `UPGRADE_REQUIRED` on Free. On the Paid plan `d.xml` is the draw.io XML, as before. The `xml` type is now `string | null`.
+
+### Diagram type
+`diagramType` is optional. Leave it out and the SDK does not send it, so the server picks the kind of diagram for your prompt. Pass a value to choose: `diagramType: "architecture"` or `diagramType: "auto"` is sent as given. Up to 1.3.0 the SDK always sent `"architecture"`; to keep that exact behaviour, pass it explicitly. `client.meta("diagram-types")` lists the values the API accepts.
+
+## Authentication & plans
+Pass your key (from **Settings → AI Provider**). Every plan has unlimited diagrams and edits; nothing is metered, there is only a per-minute rate limit. Paid adds no watermark and draw.io export; Free diagrams can be private. `dgz_test_` keys are test mode: they work on your real account, like a live key, at lower test rate limits. See your plan with `client.usage()`.
 
 ## Errors
 ```ts
@@ -57,38 +64,37 @@ try {
 ```
 
 ## Idempotency
-Every billable call (`generate`, `edit`, `fix`, `startRelayout`) **auto-attaches a
+Every AI call (`generate`, `edit`, `fix`, `startRelayout`) **auto-attaches a
 fresh `Idempotency-Key`** and retries ambiguous failures with that same key, so a
-timeout never double-charges. Pass your own key to make the window explicit or to
+timeout never makes a second diagram. Pass your own key to make the window explicit or to
 dedupe across processes:
 ```ts
 await client.generate("…", { idempotencyKey: "order-42" }); // server replays the stored result for 24h
 ```
 Definite rejections (`401`/`402`/`404`/`422`) are never retried; a call whose outcome
 is lost is recorded in `client.sessionCharges` as `status:"unknown"` — reconcile with
-`client.usageHistory()`. Streamed generations tally a `confirmed` charge on their
-terminal event; an applied re-layout tallies `unknown` (its credits bill
-asynchronously — the exact amount is in `usageHistory`).
+`client.usageHistory()`. Streamed generations tally a `confirmed` entry on their
+terminal event; an applied re-layout tallies `unknown` (the server records it
+asynchronously, so check `usageHistory`).
 
 ## Streaming
 ```ts
 for await (const { event, data } of client.generateStream("AWS event-driven pipeline")) {
   if (event === "progress") console.log(data.progress, data.message);
-  else if (event === "complete") console.log(data.id, data.usage.credits_charged);
+  else if (event === "complete") console.log(data.id);
   else if (event === "error") throw new Error(data.error.message);
 }
 ```
 (The TS SDK yields `{ event, data }` objects; the Python SDK yields `(event, data)` tuples — each idiomatic to its language.)
-The diagram XML arrives only in the terminal `complete` event (after the charge).
+The diagram XML arrives only in the terminal `complete` event.
 
 ## Async re-layout
-Re-layout is token-billed on **every** run (no free allowance) and charged only on
-delivery. The first call returns `confirmation_required`; re-call with `confirm:true`
-to accept the charge:
+Re-layout replaces the current layout, so it asks first. The first call returns
+`confirmation_required`; re-call with `confirm:true` to go ahead:
 ```ts
 let job = await client.relayoutAndWait(d.id);
 if ((job as any).status === "confirmation_required") { // re-layout always needs confirmation
-  job = await client.relayoutAndWait(d.id, { confirm: true }); // accept the credit charge
+  job = await client.relayoutAndWait(d.id, { confirm: true }); // go ahead
 }
 ```
 

@@ -188,7 +188,7 @@ test("login test mode warns and requests livemode:false", async (t) => {
   const { base, log, close } = await stubServer([[200, token]]);
   try {
     await login({ test: true, baseUrl: base, openBrowser: false, email: EMAIL });
-    assert.ok(lines.some((l) => l.includes("Test keys charge the same credits as live")));
+    assert.ok(lines.some((l) => l.includes("Test keys act on your real account")));
     assert.equal(log[0].body.livemode, false);
     assert.equal(JSON.parse(readFileSync(credentialsPath(), "utf8")).livemode, false);
   } finally {
@@ -271,7 +271,7 @@ test("upgradeUrl surfaces from the 402 QUOTA_EXCEEDED payload", async () => {
   globalThis.fetch = async () => ({
     ok: false, status: 402, headers: new Map(),
     text: async () => JSON.stringify({ error: {
-      code: "QUOTA_EXCEEDED", message: "no credits",
+      code: "QUOTA_EXCEEDED", message: "payment required",
       upgrade_url: "https://diagrams.so/billing?upgrade=1",
     } }),
   });

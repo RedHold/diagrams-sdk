@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline stub of the Diagrams.so /api/v2 — for local SDK testing with ZERO credits.
+"""Offline stub of the Diagrams.so /api/v2, for local SDK testing with no account.
 
 Runs on http://127.0.0.1:8899 by default (PORT env to change). It implements just
 enough of the contract to exercise the SDKs' billing-safety behaviour end-to-end

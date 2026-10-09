@@ -1,5 +1,38 @@
 # Changelog
 
+## [1.4.0] - 2026-10
+`diagram_type` is now optional and left out of the request when not given, in
+both SDKs.
+
+- **`generate` / `generate_stream`** (Python) and **`generate` / `generateStream`**
+  (TS): `diagram_type` / `diagramType` defaults to `None` / `undefined` and the key
+  is not sent. The server then picks the kind of diagram. An explicit value,
+  including `"architecture"` and `"auto"`, is sent as given.
+- **`import_diagram`** / **`import`**: same rule. Left out, the server default
+  applies (`"architecture"` today).
+- **Behaviour is unchanged until the API turns automatic pick on.** While the
+  server setting `API_DEFAULT_DIAGRAM_TYPE_AUTO` is off (the default), a request
+  with no type still gets `"architecture"`, exactly as before. Once it is on, a
+  request with no type is treated as `"auto"`.
+- Up to 1.3.0 the SDKs always sent `"architecture"`. Pass it explicitly to keep
+  that type after the server setting changes.
+- **Unlimited diagrams and edits on every plan.** READMEs, docstrings, examples
+  and the `login` test-key notice no longer talk about a balance or a cost per
+  task. The examples stop printing the `usage` numbers. Field and key names
+  (`credits_charged`, `credits_remaining`, `total_credits_charged`, and the
+  `session_charges` / `sessionCharges` entries) are unchanged so existing code
+  keeps working; `credits_remaining` is always -1 now. The README section
+  "Test locally, offline" replaces the old section 6 title, and its links are
+  updated.
+- **Free plan: watermarked images, Paid: the draw.io file.** The API now
+  leaves `xml` null on the Free plan and adds `xml_withheld`,
+  `xml_withheld_reason`, `export_url` (the watermarked SVG) and `upgrade_url`.
+  TS: `Diagram.xml` is `string | null`, the new fields are typed on `Diagram`
+  and `RelayoutStatus`, and `client.imageUrl(d)` returns the absolute image
+  URL. Python: results pass the fields through and `client.image_url(d)` does
+  the same. `export(id, "drawio")` on Free raises `UPGRADE_REQUIRED`. The
+  vendored spec is updated. No version bump.
+
 ## [1.2.0] — 2026-08
 Device-flow login (RFC 8628) — both SDKs, zero new runtime dependencies.
 

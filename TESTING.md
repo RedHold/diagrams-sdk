@@ -1,11 +1,11 @@
 # Local testing guide — Diagrams.so SDKs (v1.1.0)
 
-Everything here runs **fully offline and spends zero credits**. It exercises both
+Everything here runs **fully offline** and needs no account. It exercises both
 SDKs — unit tests, real-socket end-to-end tests against a local stub API, and the
 release packaging — and proves the v1.1.0 billing-safety behaviour (idempotent
 retries, honest tally, timeout ladder, no-free-relayout).
 
-> A live smoke against the real API (which **does** spend credits) is optional and
+> A live smoke against the real API (which **does** use your account) is optional and
 > covered last.
 
 **Prerequisites:** Python ≥ 3.9, Node ≥ 18. From the repo root unless noted.
@@ -67,7 +67,7 @@ cd typescript && npm run build && npm test && cd ..
 
 This is the important one: the **real** SDK transport talks HTTP over a socket to a
 local stub (`local-test/stub_api.py`) that injects failures to prove the billing
-guarantees. No mocks, no credits.
+guarantees. No mocks, no account.
 
 Open **two terminals** (or background the stub).
 
@@ -138,10 +138,10 @@ README, LICENSE, NOTICE, package.json).
 
 ---
 
-## 5. (Optional) Live smoke against the real API — spends credits
+## 5. (Optional) Live smoke against the real API
 
-Only if you want to confirm against production. **This bills your account** for
-generate/edit/relayout. Use a `dgz_test_` key (still bills, at lower rate limits).
+Only if you want to confirm against production. **This creates real diagrams** in
+your account. Use a `dgz_test_` key (same account, lower rate limits).
 
 ```bash
 export DIAGRAMS_API_KEY="dgz_test_…"
@@ -168,7 +168,7 @@ To point any test at a **local** API instead of production, set the base URL:
 - [ ] `cd typescript && npm pack --dry-run` → **1.1.0, 6 files**
 
 Everything green = the SDKs are correct and release-ready locally. Nothing here
-touches the network beyond `127.0.0.1` or spends credits.
+touches the network beyond `127.0.0.1`.
 
 ---
 

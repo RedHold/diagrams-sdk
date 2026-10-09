@@ -7,8 +7,8 @@
  *   console.log(d.id, d.score?.score);
  *
  * Every method maps 1:1 to an endpoint. Non-2xx responses throw `DiagramsAPIError`
- * carrying the API's error code, HTTP status, and request_id. Reads are free;
- * generate/edit/fix/fork cost credits (drawing is always billed).
+ * carrying the API's error code, HTTP status, and request_id. Every plan has
+ * unlimited diagrams and edits.
  *
  * Zero runtime dependencies — uses the platform `fetch`. Node ≥ 18 required for
  * `login()` and the credential cache (they use node builtins: fs/os/path/child_process).
@@ -23,7 +23,7 @@ import { createInterface } from "node:readline";
 
 export const DEFAULT_BASE = "https://api.diagrams.so/api/v2";
 /** Bumped with the package; sent so the API attributes charges to source="sdk-ts". */
-export const SDK_VERSION = "1.3.0";
+export const SDK_VERSION = "1.4.0";
 
 export class DiagramsAPIError extends Error {
   constructor(
@@ -31,7 +31,7 @@ export class DiagramsAPIError extends Error {
     message: string,
     public status: number,
     public requestId?: string,
-    /** Where to add credits/upgrade — from the 402 QUOTA_EXCEEDED payload if the
+    /** Where to upgrade to the Paid plan, from the 402 QUOTA_EXCEEDED payload if the
      * API sent one, else undefined. */
     public upgradeUrl?: string,
   ) {
@@ -66,18 +66,36 @@ export function isAmbiguous(err: unknown): boolean {
 export interface Warning { type: string; component?: string | null; message: string; }
 export interface ScoreBreakdown { type: string; label: string; count: number; deduction: number; }
 export interface Score { score: number; tier: string; warning_count: number; recoverable_points: number; breakdown: ScoreBreakdown[]; }
+/** Usage block on generate/edit/fix responses. The field names are kept so
+ * existing code does not break; credits_remaining is always -1 now. */
 export interface Usage { credits_charged: number; credits_remaining: number; tier?: string | null; }
-export interface Diagram {
-  id: string; title: string; xml: string;
+/**
+ * Sent when the caller's plan does not include the draw.io file (the Free plan).
+ * Then `xml` is null and these say where the watermarked image is. Absent on Paid.
+ */
+export interface XmlWithheld {
+  /** True when `xml` is null because the plan does not include the draw.io file. */
+  xml_withheld?: boolean;
+  /** Machine-readable reason, "UPGRADE_REQUIRED". */
+  xml_withheld_reason?: string | null;
+  /** Path of the watermarked SVG export, relative to the API host. Use `client.imageUrl(d)` for an absolute URL. */
+  export_url?: string | null;
+  /** Where to get the Paid plan. */
+  upgrade_url?: string | null;
+}
+export interface Diagram extends XmlWithheld {
+  id: string; title: string;
+  /** draw.io XML on the Paid plan; null on Free (see `xml_withheld`, `export_url`). */
+  xml: string | null;
   cloud_provider?: string | null; diagram_type?: string | null;
   is_public: boolean; created_at: string;
-  warnings: Warning[]; score?: Score | null; usage?: Usage | null;
+  warnings: Warning[]; suggestions?: Warning[]; score?: Score | null; usage?: Usage | null;
 }
 export interface Page<T> { items: T[]; next_cursor?: string | null; has_more: boolean; }
 export interface UsageHistoryItem {
   id: string; created_at: string;
   action_type: string;      // generate | edit | fix | relayout
-  credits_charged: number;  // 0 == free
+  credits_charged: number;  // kept so existing code does not break
   diagram_id?: string | null; tier?: string | null;
   tokens_input?: number | null; tokens_output?: number | null; tokens_total?: number | null;
   source?: string | null;   // api | sdk-python | sdk-ts | mcp | web
@@ -85,14 +103,16 @@ export interface UsageHistoryItem {
 }
 export interface UsageHistorySummary { total_credits_charged: number; task_count: number; }
 export interface UsageHistoryList { items: UsageHistoryItem[]; next_cursor?: string | null; has_more: boolean; summary: UsageHistorySummary; }
-/** One entry in the in-process tally of what each billable task charged. `status`
- * is `"unknown"` when the outcome was lost to an ambiguous failure (the server may
- * or may not have charged — only `usageHistory` is authoritative). */
+/** One entry in the in-process tally of the tasks this client ran. `status` is
+ * `"unknown"` when the outcome was lost to an ambiguous failure (the server may or
+ * may not have run it; only `usageHistory` is authoritative). */
 export interface SessionCharge {
   action: string;
   status: "confirmed" | "unknown";
   diagramId?: string;
+  /** Copied from the response `usage` block; kept so existing code does not break. */
   creditsCharged?: number;
+  /** Always -1 now; kept so existing code does not break. */
   creditsRemaining?: number;
   note?: string;
 }
@@ -104,7 +124,7 @@ export interface RelayoutJob {
   job_id?: string; status: string; // "pending" | "confirmation_required" | ...
   chargeable?: boolean | null; message?: string; reason?: string;
 }
-export interface RelayoutStatus {
+export interface RelayoutStatus extends XmlWithheld {
   job_id: string; status: string; // "pending" | "done" | "failed"
   applied?: boolean | null; reason?: string | null; version_number?: number | null;
   progress: number; xml?: string | null; warnings: Warning[]; score?: Score | null;
@@ -129,8 +149,8 @@ export class DiagramsClient {
   private retryBudgetMs: number;
   private clientId = `sdk-ts/${SDK_VERSION}`;
   private userAgent = `@diagrams-so/sdk/${SDK_VERSION}`;
-  /** Running tally of what each billable task charged this session — answers
-   * "how much did each task cost?" with no server round-trip. Counts only what
+  /** Running tally of the tasks this client ran this session; it answers "did that
+   * task already run?" with no server round-trip. Counts only what
    * THIS process saw; `usageHistory` is the authoritative ledger. */
   public sessionCharges: SessionCharge[] = [];
 
@@ -154,7 +174,7 @@ export class DiagramsClient {
     this.retryBudgetMs = opts.retryBudgetMs ?? 600_000;
   }
 
-  /** Record what a billable task charged (from the response `usage` block). */
+  /** Record a finished task in the tally (from the response `usage` block). */
   private track(action: string, result: any): any {
     const u = result?.usage;
     if (u) this.sessionCharges.push({
@@ -290,10 +310,14 @@ export class DiagramsClient {
   }
 
   // -- diagrams --
+  /** Generate a diagram. `diagramType` is optional: left out, the field is not
+   * sent and the server picks the kind of diagram. A value (for example
+   * `"architecture"` or `"auto"`) is sent as given. Before 1.4.0 the SDK always
+   * sent `"architecture"`. */
   async generate(prompt: string, opts: { cloudProvider?: string; diagramType?: string; opinionated?: boolean; idempotencyKey?: string } = {}) {
     return this.track("generate", await this.requestBillable<Diagram>("POST", "/diagrams", {
       action: "generate",
-      body: { prompt, cloud_provider: opts.cloudProvider ?? "general", diagram_type: opts.diagramType ?? "architecture", opinionated: opts.opinionated ?? false },
+      body: { prompt, cloud_provider: opts.cloudProvider ?? "general", diagram_type: opts.diagramType, opinionated: opts.opinionated ?? false },
       idempotencyKey: opts.idempotencyKey,
     })) as Diagram;
   }
@@ -304,9 +328,11 @@ export class DiagramsClient {
    *
    *     for await (const { event, data } of client.generateStream("AWS 3-tier app")) {
    *       if (event === "progress") console.log(data.progress, data.message);
-   *       else if (event === "complete") console.log(data.id, data.usage?.credits_charged);
+   *       else if (event === "complete") console.log(data.id);
    *       else if (event === "error") throw new Error(data.error.message);
    *     }
+   *
+   * `diagramType` works as in `generate`: left out, the server picks.
    */
   async *generateStream(
     prompt: string,
@@ -322,7 +348,7 @@ export class DiagramsClient {
     };
     const body = JSON.stringify({
       prompt, cloud_provider: opts.cloudProvider ?? "general",
-      diagram_type: opts.diagramType ?? "architecture", opinionated: opts.opinionated ?? false,
+      diagram_type: opts.diagramType, opinionated: opts.opinionated ?? false,
     });
     const resp = await fetch(this.baseUrl + "/diagrams/stream", { method: "POST", headers, body });
     if (!resp.ok) this.throwErr(resp.status, await resp.text());
@@ -374,11 +400,10 @@ export class DiagramsClient {
   warnings(id: string) { return this.request<Warning[]>("GET", `/diagrams/${id}/warnings`); }
 
   // -- async AI re-layout (202 + job_id; poll to completion) --
-  /** Start an async AI re-layout. Re-layout is token-billed on **every** run (no
-   * free allowance): the API returns `{status:"confirmation_required"}` until you
-   * re-call with `{confirm:true}` to accept the charge, which is applied only on
-   * delivery of the re-laid diagram (crash = no charge). Idempotent + same-key
-   * retried like other billable calls. */
+  /** Start an async AI re-layout. Re-layout replaces the current layout, so it
+   * asks first: the API returns `{status:"confirmation_required"}` until you
+   * re-call with `{confirm:true}`. Idempotent + same-key retried like the other
+   * AI calls. */
   startRelayout(id: string, opts: { confirm?: boolean; idempotencyKey?: string } = {}) {
     return this.requestBillable<RelayoutJob>("POST", `/diagrams/${id}/relayout`, {
       action: "relayout", query: { confirm: opts.confirm || undefined }, idempotencyKey: opts.idempotencyKey,
@@ -405,9 +430,9 @@ export class DiagramsClient {
       for (;;) {
         const st = await this.relayoutStatus(id, started.job_id);
         if (st.status === "done") {
-          // The re-layout charge bills asynchronously and isn't in the poll response,
-          // so the exact credits are unknown to this process — usageHistory has them.
-          if (chargeable) { this.recordUnknown("relayout", "chargeable re-layout applied; exact credits are in usageHistory"); recorded = true; }
+          // The server records the re-layout asynchronously and it isn't in the poll
+          // response, so this process cannot confirm it; usageHistory can.
+          if (chargeable) { this.recordUnknown("relayout", "re-layout applied; the task is listed in usageHistory"); recorded = true; }
           return st;
         }
         if (st.status === "failed") return st;
@@ -426,14 +451,29 @@ export class DiagramsClient {
       throw e;
     }
   }
+  /** Raw file. `svg` works on every plan (watermarked on Free); `drawio` needs the Paid plan (403 UPGRADE_REQUIRED on Free). */
   export(id: string, format: "drawio" | "svg" = "drawio") { return this.request<string>("GET", `/diagrams/${id}/export`, { query: { format }, raw: true }); }
+
+  /**
+   * Absolute URL of the watermarked image for a reply whose XML was withheld
+   * (Free plan), or null when the reply carries the XML. Fetch it with the same
+   * API key, or call `export(id, "svg")`.
+   */
+  imageUrl(d: { id?: string; xml?: string | null; xml_withheld?: boolean; export_url?: string | null }): string | null {
+    if (!d?.xml_withheld && typeof d?.xml === "string") return null;
+    const path = d?.export_url || (d?.id ? `/api/v2/diagrams/${encodeURIComponent(d.id)}/export?format=svg` : null);
+    if (!path) return null;
+    try { return new URL(path, this.baseUrl + "/").toString(); } catch { return path; }
+  }
   versions(id: string, opts: { limit?: number; cursor?: string } = {}) { return this.request<Page<any>>("GET", `/diagrams/${id}/versions`, { query: opts }); }
   getVersion(id: string, versionId: string) { return this.request<Diagram>("GET", `/diagrams/${id}/versions/${versionId}`); }
   revert(id: string, opts: { versionId?: string; versionNumber?: number }) {
     return this.request("POST", `/diagrams/${id}/revert`, { body: { version_id: opts.versionId, version_number: opts.versionNumber } });
   }
+  /** Import draw.io XML. `diagramType` is sent only when given; left out, the
+   * server default applies (`"architecture"` today). */
   import(xml: string, opts: { title?: string; cloudProvider?: string; diagramType?: string } = {}) {
-    return this.request("POST", "/diagrams/import", { body: { xml, title: opts.title, cloud_provider: opts.cloudProvider ?? "general", diagram_type: opts.diagramType ?? "architecture" } });
+    return this.request("POST", "/diagrams/import", { body: { xml, title: opts.title, cloud_provider: opts.cloudProvider ?? "general", diagram_type: opts.diagramType } });
   }
 
   // -- gallery --
@@ -448,8 +488,8 @@ export class DiagramsClient {
 
   // -- account --
   usage() { return this.request("GET", "/usage"); }
-  /** One page of the per-task credit-consumption history (how much each task
-   * charged), newest first. Returns `{items, next_cursor, has_more, summary}`. */
+  /** One page of the per-task history (generate/edit/fix/relayout), newest first.
+   * Returns `{items, next_cursor, has_more, summary}`. */
   usageHistory(filters: UsageHistoryFilters = {}) {
     return this.request<UsageHistoryList>("GET", "/usage/history", { query: {
       limit: filters.limit, cursor: filters.cursor, action: filters.action, source: filters.source,
@@ -494,8 +534,8 @@ export interface StoredCredentials {
 }
 
 export interface LoginOptions {
-  /** Mint a test-mode key (`livemode=false`). Test keys charge the same credits
-   * as live — not a free sandbox (lower rate limits only). */
+  /** Mint a test-mode key (`livemode=false`). Test keys act on your real
+   * account, the same as live keys (lower rate limits only). */
   test?: boolean;
   /** API base (defaults to the production API). */
   baseUrl?: string;
@@ -640,7 +680,7 @@ export async function login(opts: LoginOptions = {}): Promise<DiagramsClient> {
   const base = (opts.baseUrl ?? DEFAULT_BASE).replace(/\/+$/, "");
 
   if (opts.test) {
-    console.log("Test keys charge the same credits as live — not a free sandbox (lower rate limits only).");
+    console.log("Test keys act on your real account, the same as live keys (lower rate limits only).");
   }
 
   const email = ((opts.email ?? "").trim()) || (await promptLoginEmail());

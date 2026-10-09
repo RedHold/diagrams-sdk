@@ -12,7 +12,7 @@ Official **Python** and **TypeScript** SDKs for the [Diagrams.so](https://diagra
 | Python | [`diagrams-so`](https://pypi.org/project/diagrams-so/) | [`python/`](./python) |
 | TypeScript | [`@diagrams-so/sdk`](https://www.npmjs.com/package/@diagrams-so/sdk) | [`typescript/`](./typescript) |
 
-Both are thin, typed clients covering **all 27** `/api/v2` operations, with auto same-key idempotent retries on ambiguous billable failures (never double-charge on a timeout), `429`/`503` backoff, SSE streaming, an async re-layout helper, and an in-process credit tally.
+Both are thin, typed clients covering **all 27** `/api/v2` operations, with auto same-key idempotent retries on ambiguous failures (a timeout never makes a second diagram), `429`/`503` backoff, SSE streaming, an async re-layout helper, and an in-process task tally.
 
 ---
 
@@ -32,7 +32,7 @@ New to terminals? You only ever *copy → paste → Enter*. Nothing here can har
 
 ## Contents
 
-[0. Check you're ready](#0-check-youre-ready) · [1. Get the code & install](#1-get-the-code--install) · [2. Get an API key](#2-get-an-api-key) · [3. Try everything — Python](#3-try-everything--python) · [4. Try everything — TypeScript](#4-try-everything--typescript) · [5. Billing safety](#5-billing-safety-idempotency-retries-tally) · [6. Test locally with zero credits](#6-test-locally-with-zero-credits) · [7. Develop & release](#7-develop--release) · [Troubleshooting](#-troubleshooting)
+[0. Check you're ready](#0-check-youre-ready) · [1. Get the code & install](#1-get-the-code--install) · [2. Get an API key](#2-get-an-api-key) · [3. Try everything — Python](#3-try-everything--python) · [4. Try everything — TypeScript](#4-try-everything--typescript) · [5. Retry safety](#5-retry-safety-idempotency-retries-tally) · [6. Test locally, offline](#6-test-locally-offline) · [7. Develop & release](#7-develop--release) · [Troubleshooting](#-troubleshooting)
 
 ---
 
@@ -85,9 +85,10 @@ cd typescript && npm install && npm run build && cd ..
 
 Create a key on **Settings → AI Provider** in your Diagrams.so account.
 
-- `dgz_test_…` — **use this while trying out.** Test mode: bills the same credits against your real balance, at lower rate limits.
+- `dgz_test_…` — **use this while trying out.** Test mode: works on your real account, at lower rate limits.
 - `dgz_live_…` — production key.
-- Reads and prompt helpers are **free**. `generate` / `edit` / `fix` / `relayout` / `fork` **cost credits**.
+- Every plan has **unlimited diagrams and edits**. Nothing is metered; there is only a per-minute rate limit. Paid adds no watermark and draw.io export; Free diagrams can be private.
+- On the **Free plan** you get watermarked images: replies have `xml: null`, `xml_withheld: true` and `export_url` (the watermarked SVG; `image_url()` / `imageUrl()` makes it absolute), and `export(id, "drawio")` answers `UPGRADE_REQUIRED`. On the **Paid plan** you get the draw.io XML, as before.
 
 🖥️ **Terminal** — tell the SDK your key (do this in the **same** terminal you'll run the scripts in):
 ```bash
@@ -99,13 +100,13 @@ $env:DIAGRAMS_API_KEY="dgz_test_your_key_here"
 ```
 > This lasts only for the current terminal window. Open a new one? Set it again.
 
-**No key yet, or want zero-cost first?** Skip to [Section 6](#6-test-locally-with-zero-credits) — it runs everything against a local fake API and spends nothing.
+**No key yet, or want to try it offline first?** Skip to [Section 6](#6-test-locally-offline). It runs everything against a local fake API.
 
 ---
 
 ## 3. Try everything — Python
 
-📄 **File** — in the `diagrams-sdk` folder, create a file named **`try_all.py`** and paste this in. It exercises **every** capability; billable steps are marked.
+📄 **File** — in the `diagrams-sdk` folder, create a file named **`try_all.py`** and paste this in. It exercises **every** capability.
 
 ```python
 import os
@@ -117,16 +118,18 @@ client = DiagramsClient(
     # timeout=450.0,                             # default; above the server timeout ladder
 )
 
-# ---- reads & capabilities (free) ----
+# ---- reads & capabilities ----
 print("me:", client.me())                         # account, plan, livemode
 print("providers:", client.meta("providers"))     # 'diagram-types' | 'providers' | 'formats' | 'features'
-print("usage:", client.usage())                   # plan, credits remaining, cost estimates
+print("usage:", client.usage())                   # your plan and usage
 
-# ---- prompt helpers (free) ----
+# ---- prompt helpers ----
 print("enhanced:", client.enhance_prompt("aws web app", cloud_provider="aws"))
 print("clarify:", client.clarify_prompt("a system with a database"))
 
-# ---- generate (BILLABLE, auto-idempotent) ----
+# ---- generate (auto-idempotent) ----
+# diagram_type is optional: leave it out and the server picks the type.
+# "architecture" was the SDK default up to 1.3.0; pass it to keep that.
 try:
     d = client.generate("AWS 3-tier web app: ALB, EC2 auto-scaling, RDS Multi-AZ",
                          cloud_provider="aws", diagram_type="architecture")
@@ -134,69 +137,69 @@ except DiagramsAPIError as e:
     print(e.code, e.status, e.request_id)          # e.g. QUOTA_EXCEEDED 402 req_abc
     raise
 did = d["id"]
-print("generated", did, "| score", d["score"]["score"], "| charged", d["usage"]["credits_charged"])
+print("generated", did, "| score", d["score"]["score"])
 
-# ---- warnings + fix (fix is BILLABLE — each fix is one paid AI call) ----
-# get_warnings is free. Fix ONLY the warnings you care about, one at a time —
-# each client.fix() is a separate charge. Never loop-fix every warning (that's how
-# a 7-warning diagram turns into 7 charges); this is exactly how the site/MCP work.
+# ---- warnings + fix ----
+# Fix ONLY the warnings you care about, one at a time. Each client.fix() is its
+# own AI call and makes a new version, so do not loop-fix every warning; this is
+# exactly how the site/MCP work.
 warnings = client.warnings(did)
 if warnings:
     w = warnings[0]                    # fix just the first (most important) one
     client.fix(did, w["message"], component=w.get("component"), warning_type=w["type"])
 
-# ---- edit (BILLABLE) ----
+# ---- edit ----
 client.edit(did, "add a CloudFront CDN in front of the ALB")
 
-# ---- export (free) -> files ----
-open("diagram.drawio", "w").write(client.export(did, "drawio"))
-open("diagram.svg", "w").write(client.export(did, "svg"))
+# ---- export -> files ----
+open("diagram.svg", "w").write(client.export(did, "svg"))        # every plan; watermarked on Free
+open("diagram.drawio", "w").write(client.export(did, "drawio"))  # Paid plan only
 
-# ---- versions + revert (free / cheap) ----
+# ---- versions + revert ----
 versions = client.versions(did, limit=10)
 print("versions:", len(versions["items"]))
 # client.revert(did, version_number=1)             # roll back to a prior version
 
-# ---- async AI re-layout (BILLABLE; confirm required — no free allowance) ----
+# ---- async AI re-layout (confirm required) ----
 job = client.relayout_and_wait(did)                # starts + polls to completion
 if job.get("status") == "confirmation_required":
     job = client.relayout_and_wait(did, confirm=True)
 print("relayout:", job.get("status"), "applied:", job.get("applied"))
 
-# ---- streaming generate (BILLABLE) ----
+# ---- streaming generate ----
 for event, data in client.generate_stream("event-driven order pipeline on AWS"):
     if event == "progress":
         print("  ", data["progress"], data["message"])
     elif event == "complete":
-        print("streamed:", data["id"], "charged", data["usage"]["credits_charged"])
+        print("streamed:", data["id"])
     elif event == "error":
         raise RuntimeError(data["error"]["message"])
 
-# ---- import your own draw.io XML (free) ----
+# ---- import your own draw.io XML ----
 mine = client.import_diagram("<mxGraphModel><root/></mxGraphModel>", title="hand-made")
 print("imported:", mine["id"])
 
-# ---- gallery (search free; fork is BILLABLE) ----
+# ---- gallery (search + fork) ----
 gallery = client.search_gallery(q="kubernetes", limit=5)
 print("gallery hits:", len(gallery["items"]))
 # forked = client.fork(gallery["items"][0]["id"])
 
-# ---- list your diagrams (free, paginated) ----
+# ---- list your diagrams (paginated) ----
 page = client.list(limit=20)
 print("your diagrams (page 1):", len(page["items"]))
 
-# ---- usage history: the durable credit ledger (free) ----
+# ---- usage history: the durable task record ----
 hist = client.usage_history(limit=10)              # filters: action=, source=, since=, until=
 for item in hist["items"]:
-    print("  ", item["action_type"], item["credits_charged"], item.get("source"))
-print("total charged:", hist["summary"]["total_credits_charged"])
+    print("  ", item["action_type"], item.get("source"))
+print("total tasks:", hist["summary"]["task_count"])
 # for item in client.iter_usage_history(action=["generate"]): ...   # auto-paginate
 
-# ---- what THIS run charged (in-process tally) ----
+# ---- what THIS run did (in-process tally) ----
 for s in client.session_charges:
-    print("  tally:", s["status"], s["action"], s.get("credits_charged"))
+    print("  tally:", s["status"], s["action"])
 
-# ---- cleanup (free) ----
+# ---- cleanup ----
 # client.delete(did)
 ```
 
@@ -204,7 +207,7 @@ for s in client.session_charges:
 ```bash
 python try_all.py
 ```
-✅ **Success looks like:** a stream of `me: …`, `generated dgm_… | score …`, `relayout: done …`, `streamed: …`, `total charged: …`. It also writes `diagram.drawio` and `diagram.svg` into the folder — open `diagram.drawio` at [app.diagrams.net](https://app.diagrams.net).
+✅ **Success looks like:** a stream of `me: …`, `generated dgm_… | score …`, `relayout: done …`, `streamed: …`, `total tasks: …`. It also writes `diagram.drawio` and `diagram.svg` into the folder — open `diagram.drawio` at [app.diagrams.net](https://app.diagrams.net).
 
 ---
 
@@ -224,16 +227,18 @@ const client = new DiagramsClient({
   // timeoutMs: 450_000,                         // default; above the server timeout ladder
 });
 
-// ---- reads & capabilities (free) ----
+// ---- reads & capabilities ----
 console.log("me:", await client.me());
 console.log("providers:", await client.meta("providers")); // 'diagram-types'|'providers'|'formats'|'features'
 console.log("usage:", await client.usage());
 
-// ---- prompt helpers (free) ----
+// ---- prompt helpers ----
 console.log("enhanced:", await client.enhancePrompt("aws web app", { cloudProvider: "aws" }));
 console.log("clarify:", await client.clarifyPrompt("a system with a database"));
 
-// ---- generate (BILLABLE, auto-idempotent) ----
+// ---- generate (auto-idempotent) ----
+// diagramType is optional: leave it out and the server picks the type.
+// "architecture" was the SDK default up to 1.3.0; pass it to keep that.
 let d;
 try {
   d = await client.generate("AWS 3-tier web app: ALB, EC2 auto-scaling, RDS Multi-AZ",
@@ -243,67 +248,67 @@ try {
   throw e;
 }
 const id = d.id;
-console.log("generated", id, "| score", d.score?.score, "| charged", d.usage?.credits_charged);
+console.log("generated", id, "| score", d.score?.score);
 
-// ---- warnings + fix (fix is BILLABLE — each fix is one paid AI call) ----
-// warnings() is free. Fix ONLY the warnings you care about, one at a time — each
-// fix() is a separate charge. Never loop-fix every warning (7 warnings = 7 charges);
-// this mirrors how the site/MCP work.
+// ---- warnings + fix ----
+// Fix ONLY the warnings you care about, one at a time. Each fix() is its own AI
+// call and makes a new version, so do not loop-fix every warning; this mirrors
+// how the site/MCP work.
 const warnings = await client.warnings(id);
 if (warnings.length) {
   const w = warnings[0];
   await client.fix(id, w.message, { component: w.component ?? undefined, warningType: w.type });
 }
 
-// ---- edit (BILLABLE) ----
+// ---- edit ----
 await client.edit(id, "add a CloudFront CDN in front of the ALB");
 
-// ---- export (free) -> files ----
-writeFileSync("diagram.drawio", await client.export(id, "drawio"));
-writeFileSync("diagram.svg", await client.export(id, "svg"));
+// ---- export -> files ----
+writeFileSync("diagram.svg", await client.export(id, "svg"));        // every plan; watermarked on Free
+writeFileSync("diagram.drawio", await client.export(id, "drawio"));  // Paid plan only
 
 // ---- versions + revert ----
 const versions = await client.versions(id, { limit: 10 });
 console.log("versions:", versions.items.length);
 // await client.revert(id, { versionNumber: 1 });
 
-// ---- async AI re-layout (BILLABLE; confirm required — no free allowance) ----
+// ---- async AI re-layout (confirm required) ----
 let job = await client.relayoutAndWait(id);
 if (job.status === "confirmation_required") {
   job = await client.relayoutAndWait(id, { confirm: true });
 }
 console.log("relayout:", job.status, "applied:", job.applied);
 
-// ---- streaming generate (BILLABLE) ----
+// ---- streaming generate ----
 for await (const { event, data } of client.generateStream("event-driven order pipeline on AWS")) {
   if (event === "progress") console.log("  ", data.progress, data.message);
-  else if (event === "complete") console.log("streamed:", data.id, "charged", data.usage?.credits_charged);
+  else if (event === "complete") console.log("streamed:", data.id);
   else if (event === "error") throw new Error(data.error.message);
 }
 
-// ---- import your own draw.io XML (free) ----
+// ---- import your own draw.io XML ----
 const mine = await client.import("<mxGraphModel><root/></mxGraphModel>", { title: "hand-made" });
 console.log("imported:", mine.id);
 
-// ---- gallery (search free; fork is BILLABLE) ----
+// ---- gallery (search + fork) ----
 const gallery = await client.searchGallery({ q: "kubernetes", limit: 5 });
 console.log("gallery hits:", gallery.items.length);
 // const forked = await client.fork(gallery.items[0].id);
 
-// ---- list your diagrams (free, paginated) ----
+// ---- list your diagrams (paginated) ----
 const page = await client.list({ limit: 20 });
 console.log("your diagrams (page 1):", page.items.length);
 
-// ---- usage history: the durable credit ledger (free) ----
+// ---- usage history: the durable task record ----
 const hist = await client.usageHistory({ limit: 10 }); // filters: action, source, since, until
-for (const item of hist.items) console.log("  ", item.action_type, item.credits_charged, item.source);
-console.log("total charged:", hist.summary.total_credits_charged);
+for (const item of hist.items) console.log("  ", item.action_type, item.source);
+console.log("total tasks:", hist.summary.task_count);
 // for await (const item of client.iterUsageHistory({ action: ["generate"] })) { ... }
 
-// ---- what THIS run charged (in-process tally) ----
-for (const s of client.sessionCharges) console.log("  tally:", s.status, s.action, s.creditsCharged);
+// ---- what THIS run did (in-process tally) ----
+for (const s of client.sessionCharges) console.log("  tally:", s.status, s.action);
 
-// ---- cleanup (free) ----
+// ---- cleanup ----
 // await client.delete(id);
 ```
 
@@ -311,22 +316,22 @@ for (const s of client.sessionCharges) console.log("  tally:", s.status, s.actio
 ```bash
 node try_all.mjs
 ```
-✅ **Success looks like** the same flow as Python, ending in `total charged: …`, and writing `diagram.drawio` / `diagram.svg`.
+✅ **Success looks like** the same flow as Python, ending in `total tasks: …`, and writing `diagram.drawio` / `diagram.svg`.
 
 > The `import … "./typescript/dist/index.js"` path is why you run from the `diagrams-sdk` folder — it points at the SDK you built in Step 1.
 
 ---
 
-## 5. Billing safety (idempotency, retries, tally)
+## 5. Retry safety (idempotency, retries, tally)
 
-Every billable call (`generate` / `edit` / `fix` / `relayout`) **auto-attaches a fresh `Idempotency-Key`** and retries *ambiguous* failures (timeout, `502`/`503`/`504`, idempotency-in-progress) with the **same key** — so a response lost to a gateway timeout is replayed by the server: **one charge, never two**. Definite rejections (`401`/`402`/`404`/`422`) are never retried. You don't have to do anything to get this — it's on by default.
+Every AI call (`generate` / `edit` / `fix` / `relayout`) **auto-attaches a fresh `Idempotency-Key`** and retries *ambiguous* failures (timeout, `502`/`503`/`504`, idempotency-in-progress) with the **same key** — so a response lost to a gateway timeout is replayed by the server: **one diagram, never two**. Definite rejections (`401`/`402`/`404`/`422`) are never retried. You don't have to do anything to get this — it's on by default.
 
 📄 Add to either `try_all` file to see it (Python shown; TS is the same with `idempotencyKey` / `sessionCharges` / `usageHistory`):
 ```python
 # pass your own key to make the 24h replay window explicit / dedupe across processes
 client.generate("monthly report", idempotency_key="report-2026-08")
 
-# a call whose outcome is lost is tallied as "unknown" (may still have been charged);
+# a call whose outcome is lost is tallied as "unknown" (it may still have run on the server);
 # the server ledger is authoritative — reconcile:
 for s in client.session_charges:
     if s["status"] == "unknown":
@@ -345,9 +350,9 @@ new DiagramsClient({ apiKey, timeoutMs: 450_000, maxRetries: 3, backoffMs: 500,
 
 ---
 
-## 6. Test locally with zero credits
+## 6. Test locally, offline
 
-Want to see *all* the safety behaviour — idempotency replay, retries, the honest tally, streaming, the re-layout confirm flow — **without a key and without spending anything?** A tiny fake API is bundled. This needs **two terminals** (one to run the fake server, one to run the tests).
+Want to see *all* the safety behaviour — idempotency replay, retries, the honest tally, streaming, the re-layout confirm flow — **without a key?** A tiny fake API is bundled. This needs **two terminals** (one to run the fake server, one to run the tests).
 
 **Terminal 1** 🖥️ — start the fake API (from `diagrams-sdk`, with `(.venv)` on). Leave it running:
 ```bash
@@ -363,7 +368,7 @@ node local-test/it_typescript.mjs                 # TypeScript SDK -> 28 passed
 ```
 ✅ Each prints `28 passed, 0 failed`. When done, go to **Terminal 1** and press **Ctrl-C** to stop the fake server.
 
-Peek at the fake server's own charge ledger any time — 🖥️ (second terminal):
+Peek at the fake server's own task ledger any time — 🖥️ (second terminal):
 ```bash
 curl -s http://127.0.0.1:8899/__debug | python3 -m json.tool
 ```
@@ -408,7 +413,7 @@ Per-language docs: [`python/README.md`](./python/README.md) · [`typescript/READ
 | `ModuleNotFoundError: No module named 'diagrams_so'` | The venv isn't on or the SDK isn't installed. Run `source .venv/bin/activate` then `pip install -e ./python` from `diagrams-sdk`. |
 | `KeyError: 'DIAGRAMS_API_KEY'` (Python) / `apiKey is required` (TS) | You didn't set the key in **this** terminal. Redo [Step 2](#2-get-an-api-key). |
 | `Cannot find module './typescript/dist/index.js'` | Run `node try_all.mjs` from the **`diagrams-sdk`** folder, and build first: `cd typescript && npm run build && cd ..`. |
-| `[QUOTA_EXCEEDED] (HTTP 402)` | Out of credits — top up, or use [Section 6](#6-test-locally-with-zero-credits) (zero-cost). |
+| `[QUOTA_EXCEEDED] (HTTP 402)` | The task needs the Paid plan (no watermark, draw.io export). Upgrade, or try it offline with [Section 6](#6-test-locally-offline). |
 | `Address already in use` on the fake API | Another copy is running, or pick a new port: `PORT=8901 python local-test/stub_api.py` (and pass `BASE=http://127.0.0.1:8901/api/v2` to the test scripts). |
 | Prompt lost the `(.venv)` after opening a new terminal | Run `source .venv/bin/activate` again (Windows: `.venv\Scripts\activate`). |
 
@@ -416,7 +421,7 @@ Per-language docs: [`python/README.md`](./python/README.md) · [`typescript/READ
 
 - **Code:** [Apache-2.0](./LICENSE). See [NOTICE](./NOTICE). Each package ships its license and notice files.
 - **Service:** the SDKs are clients for the Diagrams.so API. Use of the API is governed by the [Terms of Service](https://diagrams.so/policy/terms) and [Acceptable Use Policy](https://diagrams.so/policy/acceptable-use); the code license grants no rights to the API itself.
-- **Billing:** generate, edit, fix, re-layout, and fork operations cost credits; reads, exports, and helpers are free. Test-mode keys bill your real credit balance; there is no free sandbox. The offline stub in `local-test/` costs nothing.
+- **Plans:** every plan has unlimited diagrams and edits, with a per-minute rate limit. Paid adds no watermark and draw.io export; Free diagrams can be private. Test-mode keys act on your real account; there is no separate sandbox. The offline stub in `local-test/` needs no account.
 - **Trademarks:** Diagrams.so and the Diagrams.so logo are trademarks of RedHold LLC. This license does not grant permission to use them, except to accurately describe the package's origin. See the [Trademark Policy](https://diagrams.so/policy/trademark).
 - **Security:** report vulnerabilities to security@diagrams.so per [SECURITY.md](./SECURITY.md).
 - Docs: [diagrams.so/developers](https://diagrams.so/developers)

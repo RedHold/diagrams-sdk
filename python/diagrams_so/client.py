@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json as _json
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urljoin
 
 DEFAULT_BASE = "https://api.diagrams.so/api/v2"
 
@@ -27,7 +27,7 @@ class DiagramsAPIError(Exception):
 
     @property
     def upgrade_url(self) -> Optional[str]:
-        """Where to add credits/upgrade — from the 402 QUOTA_EXCEEDED payload if
+        """Where to upgrade to the Paid plan, from the 402 QUOTA_EXCEEDED payload if
         the API sent one, else ``None``."""
         return self._upgrade_url
 
@@ -46,6 +46,17 @@ def is_ambiguous(err: Exception) -> bool:
     if not isinstance(err, DiagramsAPIError):
         return False
     return err.status in _AMBIGUOUS_STATUSES or err.code in _AMBIGUOUS_CODES
+
+
+def _generate_body(prompt: str, cloud_provider: str, diagram_type: Optional[str],
+                   opinionated: bool) -> Dict[str, Any]:
+    """Request body for a generation. ``diagram_type`` is left out when not
+    given, so the server picks the type; an explicit value is sent as given."""
+    body: Dict[str, Any] = {"prompt": prompt, "cloud_provider": cloud_provider,
+                            "opinionated": opinionated}
+    if diagram_type is not None:
+        body["diagram_type"] = diagram_type
+    return body
 
 
 class DiagramsClient:
@@ -78,14 +89,16 @@ class DiagramsClient:
         # billable call — including retries — is capped at retry_budget seconds.
         self.retry_delays = tuple(retry_delays)
         self.retry_budget = retry_budget
-        # Identify this client so the API attributes charges to source="sdk-python"
-        # in the credit-consumption history (X-Diagrams-Client wins; User-Agent is a
+        # Identify this client so the API attributes tasks to source="sdk-python"
+        # in the task history (X-Diagrams-Client wins; User-Agent is a
         # fallback). Import here to avoid a circular import at module load.
         from . import __version__ as _v
         self._client_id = f"sdk-python/{_v}"
         self._user_agent = f"diagrams-so-python/{_v}"
-        # Running tally of credits this client charged in-process — answers
-        # "how much did each task cost?" instantly, no server round-trip.
+        # Running tally of the tasks this client ran in-process; it answers "did
+        # that task already run?" instantly, no server round-trip. Confirmed
+        # entries keep the "credits_charged" / "credits_remaining" keys so
+        # existing code does not break; credits_remaining is always -1 now.
         self.session_charges: List[Dict[str, Any]] = []
 
     # -- transport ---------------------------------------------------------
@@ -188,8 +201,8 @@ class DiagramsClient:
 
     # -- session charge tally ---------------------------------------------
     def _track(self, action: str, result: Dict[str, Any]) -> Dict[str, Any]:
-        """Record what a billable task charged, so ``session_charges`` can answer
-        'how much did each task cost?' without a server round-trip. This counts only
+        """Record a finished task, so ``session_charges`` can answer 'did that task
+        already run?' without a server round-trip. This counts only
         what THIS process saw; the server ledger (:meth:`usage_history`) is
         authoritative, and ambiguous outcomes go through :meth:`_track_unknown`."""
         try:
@@ -249,16 +262,30 @@ class DiagramsClient:
 
     # -- diagrams ----------------------------------------------------------
     def generate(self, prompt: str, *, cloud_provider: str = "general",
-                 diagram_type: str = "architecture", opinionated: bool = False,
+                 diagram_type: Optional[str] = None, opinionated: bool = False,
                  idempotency_key: Optional[str] = None) -> Dict[str, Any]:
+        """Generate a diagram from ``prompt``.
+
+        ``diagram_type`` is optional. Leave it out and the field is not sent, so
+        the server picks the kind of diagram. Pass a value (for example
+        ``"architecture"`` or ``"auto"``) and it is sent as given. Before 1.4.0
+        the SDK always sent ``"architecture"``.
+
+        On the Paid plan the result's ``"xml"`` is the draw.io XML. On the Free
+        plan it is ``None`` and the result has ``"xml_withheld": True``,
+        ``"xml_withheld_reason"``, ``"export_url"`` (the watermarked SVG) and
+        ``"upgrade_url"``; :meth:`image_url` turns it into an absolute URL. The
+        same holds for :meth:`get`, :meth:`edit`, :meth:`fix`,
+        :meth:`get_version`, :meth:`relayout_status` and the ``complete`` event
+        of :meth:`generate_stream`.
+        """
         return self._track("generate", self._request_billable(
             "POST", "/diagrams", action="generate",
-            body={"prompt": prompt, "cloud_provider": cloud_provider,
-                  "diagram_type": diagram_type, "opinionated": opinionated},
+            body=_generate_body(prompt, cloud_provider, diagram_type, opinionated),
             idempotency_key=idempotency_key))
 
     def generate_stream(self, prompt: str, *, cloud_provider: str = "general",
-                        diagram_type: str = "architecture", opinionated: bool = False,
+                        diagram_type: Optional[str] = None, opinionated: bool = False,
                         idempotency_key: Optional[str] = None):
         """Stream a generation as Server-Sent Events. Yields ``(event, data)``
         tuples where ``event`` is ``"progress"`` | ``"complete"`` | ``"error"`` and
@@ -270,12 +297,13 @@ class DiagramsClient:
                 if event == "progress":
                     print(data["progress"], data["message"])
                 elif event == "complete":
-                    print(data["id"], data["usage"]["credits_charged"])
+                    print(data["id"])
                 elif event == "error":
                     raise RuntimeError(data["error"]["message"])
+
+        ``diagram_type`` works as in :meth:`generate`: left out, the server picks.
         """
-        body = {"prompt": prompt, "cloud_provider": cloud_provider,
-                "diagram_type": diagram_type, "opinionated": opinionated}
+        body = _generate_body(prompt, cloud_provider, diagram_type, opinionated)
         headers = {"Authorization": f"Bearer {self.api_key}", "Accept": "text/event-stream",
                    "Content-Type": "application/json",
                    "User-Agent": self._user_agent, "X-Diagrams-Client": self._client_id}
@@ -369,10 +397,9 @@ class DiagramsClient:
     def relayout(self, diagram_id: str, *, confirm: bool = False,
                  idempotency_key: Optional[str] = None) -> Dict[str, Any]:
         """Start an async AI re-layout. Returns a job dict with ``job_id`` and
-        ``status``. Re-layout is token-billed on **every** run (no free allowance):
-        the API returns ``{"status": "confirmation_required"}`` until you re-call
-        with ``confirm=True`` to accept the charge, which is applied only on delivery
-        of the re-laid diagram (crash = no charge). Poll with :meth:`relayout_status`,
+        ``status``. Re-layout replaces the current layout, so it asks first: the API
+        returns ``{"status": "confirmation_required"}`` until you re-call with
+        ``confirm=True``. Poll with :meth:`relayout_status`,
         or use :meth:`relayout_and_wait`."""
         return self._request_billable(
             "POST", f"/diagrams/{diagram_id}/relayout", action="relayout",
@@ -407,11 +434,11 @@ class DiagramsClient:
                 st = self.relayout_status(diagram_id, job_id)
                 if st.get("status") in ("done", "failed"):
                     if st.get("status") == "done" and chargeable:
-                        # The re-layout charge bills asynchronously and isn't in the
-                        # poll response, so the exact credits are unknown to this
-                        # process — the ledger (usage_history) has them. Mirrors MCP.
+                        # The server records the re-layout asynchronously and it
+                        # isn't in the poll response, so this process cannot
+                        # confirm it; the ledger (usage_history) can. Mirrors MCP.
                         self._track_unknown("relayout",
-                                            note="chargeable re-layout applied; exact credits are in usage_history")
+                                            note="re-layout applied; the task is listed in usage_history")
                         recorded = True
                     return st
                 if time.monotonic() >= deadline:
@@ -430,8 +457,23 @@ class DiagramsClient:
             raise
 
     def export(self, diagram_id: str, fmt: str = "drawio") -> str:
-        """Return the raw diagram file (drawio XML or SVG)."""
+        """Return the raw diagram file (drawio XML or SVG). ``"svg"`` works on
+        every plan (watermarked on Free); ``"drawio"`` needs the Paid plan and
+        raises ``DiagramsAPIError`` with code ``UPGRADE_REQUIRED`` on Free."""
         return self._request("GET", f"/diagrams/{diagram_id}/export", params={"format": fmt}, raw=True)
+
+    def image_url(self, result: Dict[str, Any]) -> Optional[str]:
+        """Absolute URL of the watermarked image for a result whose XML was
+        withheld (Free plan), or ``None`` when the result carries the XML.
+        Fetch it with the same API key, or call ``export(id, "svg")``."""
+        if not result.get("xml_withheld") and isinstance(result.get("xml"), str):
+            return None
+        path = result.get("export_url")
+        if not path and result.get("id"):
+            path = f"/api/v2/diagrams/{result['id']}/export?format=svg"
+        if not path:
+            return None
+        return urljoin(self.base_url + "/", path)
 
     def versions(self, diagram_id: str, *, limit: Optional[int] = None,
                  cursor: Optional[str] = None) -> Dict[str, Any]:
@@ -447,9 +489,13 @@ class DiagramsClient:
                              body={"version_id": version_id, "version_number": version_number})
 
     def import_diagram(self, xml: str, *, title: Optional[str] = None,
-                       cloud_provider: str = "general", diagram_type: str = "architecture") -> Dict[str, Any]:
-        return self._request("POST", "/diagrams/import", body={
-            "xml": xml, "title": title, "cloud_provider": cloud_provider, "diagram_type": diagram_type})
+                       cloud_provider: str = "general", diagram_type: Optional[str] = None) -> Dict[str, Any]:
+        """Import draw.io XML. ``diagram_type`` is sent only when given; left out,
+        the server default applies (``"architecture"`` today)."""
+        body: Dict[str, Any] = {"xml": xml, "title": title, "cloud_provider": cloud_provider}
+        if diagram_type is not None:
+            body["diagram_type"] = diagram_type
+        return self._request("POST", "/diagrams/import", body=body)
 
     # -- gallery -----------------------------------------------------------
     def search_gallery(self, *, q: Optional[str] = None, cloud_provider: Optional[str] = None,
@@ -478,8 +524,9 @@ class DiagramsClient:
                       diagram_id: Optional[str] = None, livemode: Optional[bool] = None,
                       since: Optional[str] = None, until: Optional[str] = None,
                       include_grants: bool = False) -> Dict[str, Any]:
-        """One page of the per-task credit-consumption history — how much each task
-        (generate/edit/fix/relayout) charged, newest first. Returns
+        """One page of the per-task history (generate/edit/fix/relayout), newest
+        first. Each item keeps the ``credits_charged`` field so existing code does
+        not break. Returns
         ``{items, next_cursor, has_more, summary}``. ``action``/``source`` are lists;
         ``since``/``until`` are ISO-8601 bounds (map to the API's ``from``/``to``)."""
         params: Dict[str, Any] = {

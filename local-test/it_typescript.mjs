@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // End-to-end integration test: the REAL TypeScript SDK transport (built dist/)
-// against the local stub API (local-test/stub_api.py). Zero credits. Proves
+// against the local stub API (local-test/stub_api.py). Fully offline. Proves
 // idempotency replay, the ambiguous-retry ladder, the honest tally, streaming,
 // and the re-layout confirm flow over an actual socket.
 //
@@ -87,7 +87,7 @@ let t0 = c.sessionCharges.length;
 job = await c.relayoutAndWait(d.id, { confirm: true });
 check("confirmed run reaches done+applied", job.status === "done" && job.applied === true);
 check("re-layout charged on delivery", (await charges()) - n0 === 1);
-check("re-layout recorded an UNKNOWN tally (credits async in ledger)",
+check("re-layout recorded an UNKNOWN tally (recorded async in ledger)",
   c.sessionCharges.slice(t0).some((s) => s.action === "relayout" && s.status === "unknown"));
 
 console.log("9) SSE streaming generate");

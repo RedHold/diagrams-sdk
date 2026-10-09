@@ -121,3 +121,95 @@ test("SDK covers every API operation (drift guard)", { skip: !existsSync(SPEC) &
   assert.deepEqual(missing, [], `API added ops the SDK must implement: ${missing}`);
   assert.deepEqual(removed, [], `SDK lists ops the API removed: ${removed}`);
 });
+
+// -- diagramType: left out unless given (server picks the type) --
+
+test("generate omits diagram_type when not given", async () => {
+  const calls = mockFetch([{ status: 200, body: { id: "d1" } }]);
+  const c = new DiagramsClient({ apiKey: "dgz_test_x" });
+  await c.generate("hi");
+  const sent = JSON.parse(calls[0].init.body);
+  assert.equal("diagram_type" in sent, false);
+  assert.equal(sent.cloud_provider, "general");
+});
+
+for (const value of ["architecture", "auto"]) {
+  test(`generate sends explicit diagramType "${value}"`, async () => {
+    const calls = mockFetch([{ status: 200, body: { id: "d1" } }]);
+    const c = new DiagramsClient({ apiKey: "dgz_test_x" });
+    await c.generate("hi", { diagramType: value });
+    assert.equal(JSON.parse(calls[0].init.body).diagram_type, value);
+  });
+}
+
+test("import omits diagram_type when not given, sends it when given", async () => {
+  const calls = mockFetch([{ status: 200, body: { id: "d1" } }]);
+  const c = new DiagramsClient({ apiKey: "dgz_test_x" });
+  await c.import("<mxfile/>");
+  await c.import("<mxfile/>", { diagramType: "architecture" });
+  assert.equal("diagram_type" in JSON.parse(calls[0].init.body), false);
+  assert.equal(JSON.parse(calls[1].init.body).diagram_type, "architecture");
+});
+
+for (const value of [undefined, "architecture", "auto"]) {
+  test(`generateStream diagramType ${value ?? "(not given)"}`, async () => {
+    const calls = [];
+    globalThis.fetch = async (url, init) => {
+      calls.push({ url, init });
+      const sse = 'event: complete\ndata: {"id":"d1","usage":{"credits_charged":1}}\n\n';
+      const bytes = new TextEncoder().encode(sse);
+      let done = false;
+      return {
+        ok: true, status: 200, headers: new Map(),
+        body: { getReader: () => ({ read: async () => (done ? { done: true } : ((done = true), { done: false, value: bytes })) }) },
+      };
+    };
+    const c = new DiagramsClient({ apiKey: "dgz_test_x" });
+    const opts = value === undefined ? {} : { diagramType: value };
+    for await (const _ of c.generateStream("hi", opts)) { /* drain */ }
+    const sent = JSON.parse(calls[0].init.body);
+    if (value === undefined) assert.equal("diagram_type" in sent, false);
+    else assert.equal(sent.diagram_type, value);
+  });
+}
+
+// -- Free plan: the API leaves `xml` null and points at the watermarked image --
+
+const FREE_REPLY = {
+  id: "d1", title: "t", xml: null, is_public: true, created_at: "2026-10-09T00:00:00Z", warnings: [],
+  xml_withheld: true, xml_withheld_reason: "UPGRADE_REQUIRED",
+  export_url: "/api/v2/diagrams/d1/export?format=svg", upgrade_url: "https://diagrams.so/pricing",
+};
+
+for (const [name, call] of [
+  ["generate", (c) => c.generate("hi")],
+  ["get", (c) => c.get("d1")],
+  ["edit", (c) => c.edit("d1", "add a cache")],
+  ["getVersion", (c) => c.getVersion("d1", "v1")],
+]) {
+  test(`${name}: a null-XML (Free) reply comes back with the image link`, async () => {
+    mockFetch([{ status: 200, body: FREE_REPLY }]);
+    const c = new DiagramsClient({ apiKey: "dgz_test_x" });
+    const out = await call(c);
+    assert.equal(out.xml, null);
+    assert.equal(out.xml_withheld, true);
+    assert.equal(out.xml_withheld_reason, "UPGRADE_REQUIRED");
+    assert.equal(c.imageUrl(out), "https://api.diagrams.so/api/v2/diagrams/d1/export?format=svg");
+  });
+}
+
+test("imageUrl is null when the reply has the XML", () => {
+  const c = new DiagramsClient({ apiKey: "dgz_test_x" });
+  assert.equal(c.imageUrl({ id: "d1", xml: "<mxGraphModel/>" }), null);
+});
+
+test("imageUrl follows a custom baseUrl", () => {
+  const c = new DiagramsClient({ apiKey: "dgz_test_x", baseUrl: "http://localhost:8000/api/v2" });
+  assert.equal(c.imageUrl(FREE_REPLY), "http://localhost:8000/api/v2/diagrams/d1/export?format=svg");
+});
+
+test("drawio export on Free throws UPGRADE_REQUIRED", async () => {
+  mockFetch([{ status: 403, body: { error: { code: "UPGRADE_REQUIRED", message: "paid plan", request_id: null } } }]);
+  const c = new DiagramsClient({ apiKey: "dgz_test_x" });
+  await assert.rejects(() => c.export("d1", "drawio"), (e) => e instanceof DiagramsAPIError && e.code === "UPGRADE_REQUIRED");
+});
