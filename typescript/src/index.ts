@@ -69,11 +69,27 @@ export interface Score { score: number; tier: string; warning_count: number; rec
 /** Usage block on generate/edit/fix responses. The field names are kept so
  * existing code does not break; credits_remaining is always -1 now. */
 export interface Usage { credits_charged: number; credits_remaining: number; tier?: string | null; }
-export interface Diagram {
-  id: string; title: string; xml: string;
+/**
+ * Sent when the caller's plan does not include the draw.io file (the Free plan).
+ * Then `xml` is null and these say where the watermarked image is. Absent on Paid.
+ */
+export interface XmlWithheld {
+  /** True when `xml` is null because the plan does not include the draw.io file. */
+  xml_withheld?: boolean;
+  /** Machine-readable reason, "UPGRADE_REQUIRED". */
+  xml_withheld_reason?: string | null;
+  /** Path of the watermarked SVG export, relative to the API host. Use `client.imageUrl(d)` for an absolute URL. */
+  export_url?: string | null;
+  /** Where to get the Paid plan. */
+  upgrade_url?: string | null;
+}
+export interface Diagram extends XmlWithheld {
+  id: string; title: string;
+  /** draw.io XML on the Paid plan; null on Free (see `xml_withheld`, `export_url`). */
+  xml: string | null;
   cloud_provider?: string | null; diagram_type?: string | null;
   is_public: boolean; created_at: string;
-  warnings: Warning[]; score?: Score | null; usage?: Usage | null;
+  warnings: Warning[]; suggestions?: Warning[]; score?: Score | null; usage?: Usage | null;
 }
 export interface Page<T> { items: T[]; next_cursor?: string | null; has_more: boolean; }
 export interface UsageHistoryItem {
@@ -108,7 +124,7 @@ export interface RelayoutJob {
   job_id?: string; status: string; // "pending" | "confirmation_required" | ...
   chargeable?: boolean | null; message?: string; reason?: string;
 }
-export interface RelayoutStatus {
+export interface RelayoutStatus extends XmlWithheld {
   job_id: string; status: string; // "pending" | "done" | "failed"
   applied?: boolean | null; reason?: string | null; version_number?: number | null;
   progress: number; xml?: string | null; warnings: Warning[]; score?: Score | null;
@@ -435,7 +451,20 @@ export class DiagramsClient {
       throw e;
     }
   }
+  /** Raw file. `svg` works on every plan (watermarked on Free); `drawio` needs the Paid plan (403 UPGRADE_REQUIRED on Free). */
   export(id: string, format: "drawio" | "svg" = "drawio") { return this.request<string>("GET", `/diagrams/${id}/export`, { query: { format }, raw: true }); }
+
+  /**
+   * Absolute URL of the watermarked image for a reply whose XML was withheld
+   * (Free plan), or null when the reply carries the XML. Fetch it with the same
+   * API key, or call `export(id, "svg")`.
+   */
+  imageUrl(d: { id?: string; xml?: string | null; xml_withheld?: boolean; export_url?: string | null }): string | null {
+    if (!d?.xml_withheld && typeof d?.xml === "string") return null;
+    const path = d?.export_url || (d?.id ? `/api/v2/diagrams/${encodeURIComponent(d.id)}/export?format=svg` : null);
+    if (!path) return null;
+    try { return new URL(path, this.baseUrl + "/").toString(); } catch { return path; }
+  }
   versions(id: string, opts: { limit?: number; cursor?: string } = {}) { return this.request<Page<any>>("GET", `/diagrams/${id}/versions`, { query: opts }); }
   getVersion(id: string, versionId: string) { return this.request<Diagram>("GET", `/diagrams/${id}/versions/${versionId}`); }
   revert(id: string, opts: { versionId?: string; versionNumber?: number }) {

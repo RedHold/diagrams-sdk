@@ -124,3 +124,46 @@ def test_generate_stream_diagram_type(value, expected):
         assert "diagram_type" not in seen["body"]
     else:
         assert seen["body"]["diagram_type"] == expected
+
+
+# -- Free plan: the API leaves `xml` null and points at the watermarked image --
+
+_FREE_REPLY = {
+    "id": "d1", "title": "t", "xml": None, "is_public": True, "created_at": "2026-10-09T00:00:00Z",
+    "warnings": [], "xml_withheld": True, "xml_withheld_reason": "UPGRADE_REQUIRED",
+    "export_url": "/api/v2/diagrams/d1/export?format=svg", "upgrade_url": "https://diagrams.so/pricing",
+}
+
+
+@pytest.mark.parametrize("call", [
+    lambda c: c.generate("hi"),
+    lambda c: c.get("d1"),
+    lambda c: c.edit("d1", "add a cache"),
+    lambda c: c.get_version("d1", "v1"),
+])
+def test_null_xml_reply_is_returned_with_the_image_link(call):
+    c = DiagramsClient(api_key="dgz_test_x")
+    with mock.patch.object(c, "_send", return_value=_resp(200, _FREE_REPLY)):
+        out = call(c)
+    assert out["xml"] is None and out["xml_withheld"] is True
+    assert out["xml_withheld_reason"] == "UPGRADE_REQUIRED"
+    assert c.image_url(out) == "https://api.diagrams.so/api/v2/diagrams/d1/export?format=svg"
+
+
+def test_image_url_is_none_when_the_reply_has_xml():
+    c = DiagramsClient(api_key="dgz_test_x")
+    assert c.image_url({"id": "d1", "xml": "<mxGraphModel/>"}) is None
+
+
+def test_image_url_follows_a_custom_base_url():
+    c = DiagramsClient(api_key="dgz_test_x", base_url="http://localhost:8000/api/v2")
+    assert c.image_url(_FREE_REPLY) == "http://localhost:8000/api/v2/diagrams/d1/export?format=svg"
+
+
+def test_drawio_export_on_free_raises_upgrade_required():
+    c = DiagramsClient(api_key="dgz_test_x")
+    err = {"error": {"code": "UPGRADE_REQUIRED", "message": "paid plan", "request_id": None}}
+    with mock.patch.object(c, "_send", return_value=_resp(403, err)):
+        with pytest.raises(DiagramsAPIError) as e:
+            c.export("d1", "drawio")
+    assert e.value.code == "UPGRADE_REQUIRED"

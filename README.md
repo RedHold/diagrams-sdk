@@ -88,6 +88,7 @@ Create a key on **Settings → AI Provider** in your Diagrams.so account.
 - `dgz_test_…` — **use this while trying out.** Test mode: works on your real account, at lower rate limits.
 - `dgz_live_…` — production key.
 - Every plan has **unlimited diagrams and edits**. Nothing is metered; there is only a per-minute rate limit. Paid adds no watermark and draw.io export; Free diagrams can be private.
+- On the **Free plan** you get watermarked images: replies have `xml: null`, `xml_withheld: true` and `export_url` (the watermarked SVG; `image_url()` / `imageUrl()` makes it absolute), and `export(id, "drawio")` answers `UPGRADE_REQUIRED`. On the **Paid plan** you get the draw.io XML, as before.
 
 🖥️ **Terminal** — tell the SDK your key (do this in the **same** terminal you'll run the scripts in):
 ```bash
@@ -151,8 +152,8 @@ if warnings:
 client.edit(did, "add a CloudFront CDN in front of the ALB")
 
 # ---- export -> files ----
-open("diagram.drawio", "w").write(client.export(did, "drawio"))
-open("diagram.svg", "w").write(client.export(did, "svg"))
+open("diagram.svg", "w").write(client.export(did, "svg"))        # every plan; watermarked on Free
+open("diagram.drawio", "w").write(client.export(did, "drawio"))  # Paid plan only
 
 # ---- versions + revert ----
 versions = client.versions(did, limit=10)
@@ -263,8 +264,8 @@ if (warnings.length) {
 await client.edit(id, "add a CloudFront CDN in front of the ALB");
 
 // ---- export -> files ----
-writeFileSync("diagram.drawio", await client.export(id, "drawio"));
-writeFileSync("diagram.svg", await client.export(id, "svg"));
+writeFileSync("diagram.svg", await client.export(id, "svg"));        // every plan; watermarked on Free
+writeFileSync("diagram.drawio", await client.export(id, "drawio"));  // Paid plan only
 
 // ---- versions + revert ----
 const versions = await client.versions(id, { limit: 10 });

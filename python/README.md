@@ -40,8 +40,12 @@ w = client.warnings(d["id"])
 if w:
     client.fix(d["id"], w[0]["message"], component=w[0].get("component"), warning_type=w[0]["type"])
 
-open("diagram.drawio", "w").write(client.export(d["id"], "drawio"))
+open("diagram.drawio", "w").write(client.export(d["id"], "drawio"))  # Paid plan
+open("diagram.svg", "w").write(client.export(d["id"], "svg"))        # every plan; watermarked on Free
 ```
+
+### Free plan: watermarked images, Paid: the draw.io file
+On the Free plan the API leaves `xml` out: `d["xml"]` is `None`, `d["xml_withheld"]` is `True`, and `d["export_url"]` points at the watermarked SVG. `client.image_url(d)` gives the absolute URL (fetch it with the same key), or call `client.export(d["id"], "svg")`. `export(id, "drawio")` raises `DiagramsAPIError` with code `UPGRADE_REQUIRED` on Free. On the Paid plan `d["xml"]` is the draw.io XML, as before.
 
 ### Diagram type
 `diagram_type` is optional. Leave it out and the SDK does not send it, so the server picks the kind of diagram for your prompt. Pass a value to choose: `diagram_type="architecture"` or `diagram_type="auto"` is sent as given. Up to 1.3.0 the SDK always sent `"architecture"`; to keep that exact behaviour, pass it explicitly. `client.meta("diagram-types")` lists the values the API accepts.

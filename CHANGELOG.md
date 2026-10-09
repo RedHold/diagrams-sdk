@@ -24,6 +24,14 @@ both SDKs.
   keeps working; `credits_remaining` is always -1 now. The README section
   "Test locally, offline" replaces the old section 6 title, and its links are
   updated.
+- **Free plan: watermarked images, Paid: the draw.io file.** The API now
+  leaves `xml` null on the Free plan and adds `xml_withheld`,
+  `xml_withheld_reason`, `export_url` (the watermarked SVG) and `upgrade_url`.
+  TS: `Diagram.xml` is `string | null`, the new fields are typed on `Diagram`
+  and `RelayoutStatus`, and `client.imageUrl(d)` returns the absolute image
+  URL. Python: results pass the fields through and `client.image_url(d)` does
+  the same. `export(id, "drawio")` on Free raises `UPGRADE_REQUIRED`. The
+  vendored spec is updated. No version bump.
 
 ## [1.2.0] — 2026-08
 Device-flow login (RFC 8628) — both SDKs, zero new runtime dependencies.

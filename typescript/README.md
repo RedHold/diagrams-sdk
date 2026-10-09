@@ -38,8 +38,12 @@ console.log(d.id, d.score?.score, d.warnings.length);
 const w = await client.warnings(d.id);
 if (w.length) await client.fix(d.id, w[0].message, { component: w[0].component ?? undefined, warningType: w[0].type });
 
-const drawio = await client.export(d.id, "drawio"); // native .drawio XML string
+const drawio = await client.export(d.id, "drawio"); // native .drawio XML string (Paid plan)
+const svg = await client.export(d.id, "svg");       // every plan; watermarked on Free
 ```
+
+### Free plan: watermarked images, Paid: the draw.io file
+On the Free plan the API leaves `xml` out: `d.xml` is `null`, `d.xml_withheld` is `true`, and `d.export_url` points at the watermarked SVG. `client.imageUrl(d)` gives the absolute URL (fetch it with the same key), or call `client.export(d.id, "svg")`. `export(id, "drawio")` throws `DiagramsAPIError` with code `UPGRADE_REQUIRED` on Free. On the Paid plan `d.xml` is the draw.io XML, as before. The `xml` type is now `string | null`.
 
 ### Diagram type
 `diagramType` is optional. Leave it out and the SDK does not send it, so the server picks the kind of diagram for your prompt. Pass a value to choose: `diagramType: "architecture"` or `diagramType: "auto"` is sent as given. Up to 1.3.0 the SDK always sent `"architecture"`; to keep that exact behaviour, pass it explicitly. `client.meta("diagram-types")` lists the values the API accepts.

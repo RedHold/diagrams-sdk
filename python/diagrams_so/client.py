@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json as _json
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urljoin
 
 DEFAULT_BASE = "https://api.diagrams.so/api/v2"
 
@@ -270,6 +270,14 @@ class DiagramsClient:
         the server picks the kind of diagram. Pass a value (for example
         ``"architecture"`` or ``"auto"``) and it is sent as given. Before 1.4.0
         the SDK always sent ``"architecture"``.
+
+        On the Paid plan the result's ``"xml"`` is the draw.io XML. On the Free
+        plan it is ``None`` and the result has ``"xml_withheld": True``,
+        ``"xml_withheld_reason"``, ``"export_url"`` (the watermarked SVG) and
+        ``"upgrade_url"``; :meth:`image_url` turns it into an absolute URL. The
+        same holds for :meth:`get`, :meth:`edit`, :meth:`fix`,
+        :meth:`get_version`, :meth:`relayout_status` and the ``complete`` event
+        of :meth:`generate_stream`.
         """
         return self._track("generate", self._request_billable(
             "POST", "/diagrams", action="generate",
@@ -449,8 +457,23 @@ class DiagramsClient:
             raise
 
     def export(self, diagram_id: str, fmt: str = "drawio") -> str:
-        """Return the raw diagram file (drawio XML or SVG)."""
+        """Return the raw diagram file (drawio XML or SVG). ``"svg"`` works on
+        every plan (watermarked on Free); ``"drawio"`` needs the Paid plan and
+        raises ``DiagramsAPIError`` with code ``UPGRADE_REQUIRED`` on Free."""
         return self._request("GET", f"/diagrams/{diagram_id}/export", params={"format": fmt}, raw=True)
+
+    def image_url(self, result: Dict[str, Any]) -> Optional[str]:
+        """Absolute URL of the watermarked image for a result whose XML was
+        withheld (Free plan), or ``None`` when the result carries the XML.
+        Fetch it with the same API key, or call ``export(id, "svg")``."""
+        if not result.get("xml_withheld") and isinstance(result.get("xml"), str):
+            return None
+        path = result.get("export_url")
+        if not path and result.get("id"):
+            path = f"/api/v2/diagrams/{result['id']}/export?format=svg"
+        if not path:
+            return None
+        return urljoin(self.base_url + "/", path)
 
     def versions(self, diagram_id: str, *, limit: Optional[int] = None,
                  cursor: Optional[str] = None) -> Dict[str, Any]:
